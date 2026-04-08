@@ -22,35 +22,42 @@ Phase 4: PLAN    → Assemble final actionable plan
 
 ## Phase 1: ASK — Requirement Elicitation
 
-**Goal**: Collect enough context to understand what the user wants.
+**Goal**: Collect enough context to understand what the user wants — quickly and with minimal friction.
 
-Ask questions in THREE categories. Use the AskQuestion tool when available; otherwise ask conversationally.
+### Interaction Principles
 
-### Category A: Background & Goal
+1. **Be concise.** Ask short, direct questions. No preambles or lengthy explanations.
+2. **Provide selectable options.** Every question should offer 2-5 concrete choices (A/B/C/D) so the user can pick quickly instead of typing long answers. Use the `AskQuestion` tool when available.
+3. **Annotate options for clarity.** When an option's meaning isn't self-evident, add a brief parenthetical note explaining its implication — e.g., `(A) SSR (better SEO, slower dev setup)`. This helps the user make informed choices without extra back-and-forth.
+4. **Mark recommended options.** When there is a clearly superior or conventional choice given the context, mark it with `⭐` — e.g., `(A) ⭐ React (matches existing codebase)`. Only mark one option per question; omit the marker when no option is clearly better.
+5. **Always accept custom answers.** Include an "Other (please specify)" or open-ended escape hatch on every question. The agent must recognize and incorporate free-text answers gracefully.
+6. **Auto-decide trivial items.** For decisions that have minimal impact on the overall plan (e.g., folder structure conventions, minor naming choices, standard linting setup), make a reasonable default choice and **do not ask the user**. List these auto-decisions in the Phase 2 summary for transparency.
+7. **Batch efficiently.** Group questions into 1-3 batches. Fewer is better — merge questions when possible without sacrificing clarity.
 
-Ask these first:
-1. **What** is the end goal? (What does "done" look like?)
-2. **Why** is this needed? (What problem does it solve?)
-3. **Who** will use it? (Target audience or stakeholders)
+### Question Categories
 
-### Category B: Constraints & Boundaries
+#### Category A: Background & Goal (ask first)
 
-Then ask:
-4. **Tech stack**: Any required languages, frameworks, or platforms?
-5. **Timeline**: Any deadline or urgency?
-6. **Scope limits**: What is explicitly OUT of scope?
-7. **Dependencies**: Any existing systems, APIs, or data sources involved?
+1. **What** is the end goal? → Offer likely project types as options
+2. **Why** is this needed? → Offer common motivations as options
+3. **Who** will use it? → Offer audience types as options
 
-### Category C: Preferences & Quality
+#### Category B: Constraints & Boundaries (ask second)
 
-Finally ask:
-8. **Quality priorities**: Performance vs. speed-to-ship vs. maintainability?
-9. **Style preferences**: Any patterns, conventions, or examples to follow?
-10. **Known risks**: Anything the user is worried about?
+4. **Tech stack** → Detect from codebase when possible; confirm with options
+5. **Timeline** → Offer timeframe ranges
+6. **Scope limits** → List likely features and ask which are OUT
+7. **Dependencies** → Offer common integrations as options
 
-> **IMPORTANT**: Do NOT ask all 10 questions at once. Group them into 2-3 batches. Start with Category A, then B, then C.
+#### Category C: Preferences & Quality (ask last, or merge into B when simple)
 
-For domain-specific question templates, see [question-bank.md](reference/question-bank.md).
+8. **Quality priorities** → Offer ranked-choice among: speed-to-ship, performance, maintainability, UX polish
+9. **Style preferences** → Only ask when genuinely impactful; otherwise auto-decide
+10. **Known risks** → Optional; only ask if the project has obvious risk areas
+
+> **IMPORTANT**: Do NOT ask all questions at once. Use 1-3 batches. Merge Category C into B when the project is straightforward. Skip questions you can infer from context or the codebase.
+
+For domain-specific question templates with options, see [question-bank.md](reference/question-bank.md).
 
 ### Phase 1 Completion Checklist
 
@@ -98,9 +105,15 @@ After all gaps are filled, present a **Requirement Summary** to the user for con
 **Scope**: [in-scope items] | **Out of scope**: [excluded items]
 **Constraints**: [timeline, performance, etc.]
 **Priorities**: [ranked: e.g. correctness > performance > speed-to-ship]
+
+### Auto-decided (no user input needed)
+- [item]: [chosen default] — [brief reason]
+- [item]: [chosen default] — [brief reason]
 ```
 
-Ask the user: **"Does this summary accurately capture your requirements? Anything to add or correct?"**
+The **Auto-decided** section lists all trivial decisions the agent made without asking. This gives the user visibility and a chance to override if needed.
+
+Ask the user: **"Does this summary accurately capture your requirements? Check the auto-decided items too — override any you disagree with."**
 
 Do NOT proceed to Phase 3 until the user confirms.
 
@@ -141,7 +154,7 @@ For the plan output template, see [plan-template.md](reference/plan-template.md)
 
 ## Phase 4: PLAN — Assembly
 
-**Goal**: Organize tasks into a sequenced, actionable plan.
+**Goal**: Organize tasks into a sequenced, actionable plan that is clear, rigorous, and not overly verbose.
 
 ### Step 4.1: Dependency Ordering
 
@@ -151,13 +164,31 @@ Arrange tasks respecting dependencies. Tasks with no dependencies come first. Gr
 
 Use the plan template from [plan-template.md](reference/plan-template.md) to produce the final plan.
 
+**Writing guidelines for the plan**:
+- **Be precise, not verbose.** Each task description should be 1-2 sentences max. Cut filler words.
+- **Every task must be actionable.** A developer should be able to start working from the task card alone.
+- **Use tables and lists over paragraphs.** Dense, scannable formats beat prose.
+- **Keep the total plan concise.** Aim for a plan that fits in one focused reading session. If the plan exceeds ~40 tasks, group them into sub-plans or milestones.
+
 ### Step 4.3: Present and Confirm
 
 Present the complete plan to the user. Ask:
 - "Does this plan look reasonable?"
 - "Any tasks missing or priorities to adjust?"
 
-The skill's mission is complete after the user confirms the plan.
+### Step 4.4: Offer Agent-Executable Output
+
+After the user confirms the plan, **always** offer:
+
+> "Would you like me to output an **agent-executable version** of this plan? That version is optimized for pasting into a coding agent (e.g., Cursor, Copilot) for direct implementation — with precise instructions, file paths, and acceptance criteria, but no conversational prose."
+
+If the user accepts, re-format the plan using the **Agent-Executable Plan Template** from [plan-template.md](reference/plan-template.md). Key differences from the human-readable version:
+- No conversational tone — imperative instructions only
+- Include file paths and code-level details where known
+- Each task is a self-contained instruction block
+- Remove risk register and overview prose — keep only actionable content
+
+The skill's mission is complete after the user confirms the plan (and receives the agent version if requested).
 
 ---
 
@@ -165,9 +196,12 @@ The skill's mission is complete after the user confirms the plan.
 
 1. **Never skip questioning.** Even if the request seems clear, confirm at least the goal, constraints, and priorities.
 2. **Never plan without confirmation.** Always get user approval on the requirement summary before decomposing.
-3. **Keep questions focused.** 3-5 questions per batch, never a wall of 10+ questions.
-4. **Be concrete.** Every task in the plan must have a clear deliverable, not just "think about X".
-5. **Surface trade-offs.** When you see competing constraints, name them explicitly and ask the user to choose.
+3. **Keep questions concise and option-driven.** 3-5 questions per batch with selectable choices. Never send a wall of open-ended questions.
+4. **Auto-decide what doesn't matter.** Trivial choices should be made by the agent and listed in the summary — not asked to the user.
+5. **Be concrete.** Every task in the plan must have a clear deliverable, not just "think about X".
+6. **Surface trade-offs.** When you see competing constraints, name them explicitly and ask the user to choose.
+7. **Keep plans concise.** Rigorous and complete, but no filler. A good plan is one page you can act on, not ten pages you'll never re-read.
+8. **Always offer agent-executable output.** After plan confirmation, prompt the user about the agent-optimized version.
 
 ---
 

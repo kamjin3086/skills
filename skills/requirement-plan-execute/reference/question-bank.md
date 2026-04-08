@@ -3,6 +3,30 @@
 > Reference file for the Requirement Elicitation & Plan Assembly skill.
 > Read this file when you need domain-specific questions beyond the core 10 in [SKILL.md](../SKILL.md).
 
+## Interaction Style Guide
+
+**All questions should follow the option-driven format:**
+
+```
+[Short question]
+  (A) ⭐ [Option 1] ([brief note on why recommended])
+  (B) [Option 2] ([brief note on implication/trade-off])
+  (C) [Option 3] ([brief note on implication/trade-off])
+  (D) Other — please specify
+```
+
+**Option formatting rules:**
+- Add a parenthetical note when the option's meaning or trade-off isn't obvious — e.g., `(B) GraphQL (flexible queries, steeper learning curve)`.
+- Mark one recommended option with `⭐` when there is a clearly better choice given the project context. Omit the marker when no option is clearly superior.
+- Keep notes short — ideally under 8 words per note.
+
+When using the `AskQuestion` tool, map each option to a selectable choice. Always include an open-ended escape hatch.
+
+**When to auto-decide instead of asking:**
+- The choice has no meaningful impact on architecture or scope (e.g., lint config, file naming convention)
+- There is an obvious industry default (e.g., UTF-8 encoding, .gitignore inclusion)
+- The codebase already implies the answer (e.g., existing package.json reveals the framework)
+
 ## Table of Contents
 
 - [Web Application Projects](#web-application-projects)
@@ -136,51 +160,57 @@
 
 ## General Clarification Patterns
 
-Use these templates when a user's answer is too vague:
+Use these option-driven templates when a user's answer is too vague:
 
 ### Vague Goal
 ```
 User said: "I want to improve the system."
 
-Follow-up: "Can you describe what 'improved' looks like?
-For example:
-  (A) Faster response times
-  (B) Fewer bugs or errors
-  (C) Better user experience
-  (D) Easier to maintain
-  (E) Something else — please describe"
+Follow-up: "What does 'improved' mean here?
+  (A) Faster response times (reduce latency / throughput)
+  (B) Fewer bugs or errors (stability focus)
+  (C) Better user experience (UI/UX polish)
+  (D) Easier to maintain (refactor / simplify code)
+  (E) Other — please specify"
 ```
 
 ### Vague Scope
 ```
 User said: "Build a dashboard."
 
-Follow-up: "To scope this properly, I need to understand:
-  1. What data should the dashboard display?
-  2. How many distinct views or pages?
-  3. Does it need real-time updates or is periodic refresh OK?
-  4. Who will use this dashboard? (internal team, customers, executives)"
+Follow-up: "What kind of dashboard?
+  (A) Analytics (charts, metrics, trends)
+  (B) Admin panel (manage data/users)
+  (C) Monitoring (real-time system health)
+  (D) Other — please specify
+
+Who uses it?
+  (A) Internal team (devs/ops)
+  (B) Customers (external-facing)
+  (C) Executives (high-level KPIs)
+  (D) Other"
 ```
 
 ### Vague Constraint
 ```
 User said: "It should be fast."
 
-Follow-up: "Can you quantify 'fast'?
-  (A) Under 100ms response time (real-time feel)
-  (B) Under 1 second (responsive)
-  (C) Under 10 seconds (acceptable for batch/report)
-  (D) Not sure — what is the current performance?"
+Follow-up: "How fast?
+  (A) < 100ms (real-time feel, needs optimization)
+  (B) ⭐ < 1s (responsive, standard target)
+  (C) < 10s (batch/report, relaxed)
+  (D) Not sure — what's current performance?"
 ```
 
 ### Contradictory Requirements
 ```
 Detected: User wants [A] but also [B], which conflicts.
 
-Follow-up: "I noticed a potential conflict:
-  - You mentioned wanting [A]
-  - But you also said [B]
-  - These may conflict because [reason]
+Follow-up: "These two seem to conflict:
+  - [A] vs. [B] — because [reason]
 
-  Which should take priority? Or is there a middle ground you'd accept?"
+  Which wins?
+  (A) Prioritize [A] ([trade-off note])
+  (B) Prioritize [B] ([trade-off note])
+  (C) Find a middle ground — I'll suggest one"
 ```

@@ -23,48 +23,69 @@ This is a typical vague request. Below is how the agent handles it through all 4
 
 ### Phase 1: ASK
 
-#### Batch 1 — Background & Goal
+#### Batch 1 — Background & Goal + Constraints
 
-**Agent asks:**
+**Agent asks (using AskQuestion tool or conversational options):**
 
-> To help you plan this effectively, I need to understand the big picture first:
+> A few quick questions to scope this:
 >
-> 1. What does "done" look like for this project? Is it a web app, mobile app, CLI tool, or something else?
-> 2. What problem are you solving? Is your team currently using another tool that doesn't work well, or is there no tool at all?
-> 3. How many people will use this? Just your immediate team, or the whole company?
+> 1. What type of project?
+>    (A) ⭐ Web app (accessible to whole team instantly)
+>    (B) Mobile app (needs app store distribution)
+>    (C) CLI tool (developer-only usage)
+>    (D) Other — specify
+>
+> 2. What's the core problem?
+>    (A) Replacing a clunky existing tool (migration needed)
+>    (B) No tool exists yet (greenfield)
+>    (C) Scaling/improving current solution
+>    (D) Other
+>
+> 3. Team size?
+>    (A) 1-5  (B) 5-20  (C) 20-100  (D) 100+
+>
+> 4. Tech stack preference?
+>    (A) ⭐ React + Node.js (most common, huge ecosystem)
+>    (B) Vue + Python
+>    (C) Next.js (SSR built-in)
+>    (D) Other — specify
+>
+> 5. Timeline?
+>    (A) 1-2 weeks (tight, MVP only)
+>    (B) ⭐ 3-4 weeks (solid MVP with core features)
+>    (C) 1-3 months (full-featured v1)
+>    (D) No deadline
 
 **User responds:**
 
-> It's a web app. We're using spreadsheets right now and it's a mess — tasks get lost, no one knows what's assigned to whom. It's a team of about 15 people, all developers.
+> A, A (spreadsheets are a mess — tasks get lost), B (about 15 devs), A, B
 
-#### Batch 2 — Constraints & Boundaries
-
-**Agent asks:**
-
-> Got it. Now some practical constraints:
->
-> 4. Do you have a preferred tech stack? (e.g., React, Vue, Node.js, Python, etc.)
-> 5. Is there a deadline or timeline? When would you like this to be usable?
-> 6. What is explicitly out of scope? For example: time tracking, calendar integration, file attachments?
-> 7. Any existing systems this needs to connect to? (e.g., Slack, GitHub, email)
-
-**User responds:**
-
-> We use React and Node.js. I'd like a working version in 4 weeks. Out of scope: time tracking, calendar integration. It should integrate with our GitHub repos for linking PRs to tasks.
-
-#### Batch 3 — Preferences & Quality
+#### Batch 2 — Scope & Integrations
 
 **Agent asks:**
 
-> Almost done with questions:
+> 6. Which of these are IN scope? (pick all that apply)
+>    (A) Task CRUD + assignment (core)
+>    (B) Status tracking / kanban board (visual workflow)
+>    (C) Time tracking (effort logging)
+>    (D) Calendar integration (deadline sync)
+>    (E) File attachments (docs on tasks)
+>    (F) GitHub integration (link PRs to tasks)
 >
-> 8. What matters most: polished UI, fast performance, or getting it shipped quickly?
-> 9. Any existing task management tools you like the UX of? (for reference)
-> 10. Any concerns or risks you're already thinking about?
+> 7. What matters most?
+>    (A) ⭐ Ship fast — polish later (get team using it ASAP)
+>    (B) Polished UX from day one (higher adoption, slower delivery)
+>    (C) Performance/scale (optimize for large data)
+>    (D) Maintainability (clean code, easy to extend)
 
 **User responds:**
 
-> Ship quickly first, polish later. I like Linear's simplicity. My concern is that team adoption might be low if it's clunky.
+> A, B, F are in scope. C/D/E out. And A — ship fast, but I like Linear's simplicity. Concerned about team adoption if it's clunky.
+
+**Agent auto-decides (not asked):**
+- Project structure: monorepo with `/frontend` and `/backend`
+- Linting: ESLint + Prettier defaults
+- Git workflow: feature branches + PRs
 
 ---
 
@@ -128,7 +149,12 @@ The agent reviews the answers and identifies:
 > 2. Usability (low friction for adoption)
 > 3. Polish (can come later)
 >
-> **Does this summary accurately capture your requirements? Anything to add or correct?**
+> ### Auto-decided (defaults chosen, override if needed)
+> - Project structure: monorepo (`/frontend` + `/backend`) — standard for React+Node
+> - Linting: ESLint + Prettier — team convention
+> - Git workflow: feature branches + PRs — industry default
+>
+> **Does this look right? Check the auto-decided items too — override any you disagree with.**
 
 **User responds**: "Looks good. Let's go."
 
@@ -297,16 +323,121 @@ Time estimate: 1 hour
 >
 > **Does this plan look reasonable? Any tasks missing or priorities to adjust?**
 
-**User confirms.** Mission complete.
+**User confirms.** Agent then offers:
+
+> "Would you like me to output an **agent-executable version** of this plan? That version is optimized for pasting into a coding agent for direct implementation."
+
+**User responds**: "Yes, give me the agent version."
+
+**Agent outputs:**
+
+> # Team Task Manager — Agent Execution Plan
+>
+> ## Context
+> - Tech stack: React, Node.js, PostgreSQL
+> - Monorepo: `/frontend` (React), `/backend` (Node.js)
+> - Timeline: 4 weeks MVP. UX reference: Linear
+>
+> ## Tasks
+>
+> ### Phase 1: Foundation (Week 1)
+>
+> #### Task 1.1: Project Setup
+> - **Do**: Scaffold monorepo with React frontend (`/frontend`) and Node.js+Express backend (`/backend`). Add shared config for ESLint + Prettier.
+> - **Files**: `package.json`, `frontend/`, `backend/`, `.eslintrc`, `.prettierrc`
+> - **Depends on**: None
+> - **Done when**:
+>   - [ ] `npm run dev` starts both frontend and backend
+>   - [ ] Health-check endpoint at `GET /api/health` returns 200
+>
+> #### Task 1.2: Database Schema
+> - **Do**: Create PostgreSQL schema with `users`, `tasks`, `task_assignments` tables. Write migration scripts.
+> - **Files**: `backend/migrations/`, `backend/src/db/`
+> - **Depends on**: 1.1
+> - **Done when**:
+>   - [ ] Migrations run without errors
+>   - [ ] Schema supports CRUD + assignment
+>
+> #### Task 1.3: Auth System
+> - **Do**: Implement email+password signup/login endpoints. Use bcrypt for hashing, JWT for sessions. Add auth middleware.
+> - **Files**: `backend/src/routes/auth.ts`, `backend/src/middleware/auth.ts`
+> - **Depends on**: 1.2
+> - **Done when**:
+>   - [ ] POST `/api/auth/signup` creates user
+>   - [ ] POST `/api/auth/login` returns JWT
+>   - [ ] Protected routes reject requests without valid JWT
+>
+> ### Phase 2: Core Features (Week 2-3)
+>
+> #### Task 2.1: Task API
+> - **Do**: CRUD endpoints for tasks. Support assignment, status transitions (todo/in-progress/done), filtering by status and assignee.
+> - **Files**: `backend/src/routes/tasks.ts`, `backend/src/models/task.ts`
+> - **Depends on**: 1.2, 1.3
+> - **Done when**:
+>   - [ ] All CRUD operations work via API
+>   - [ ] Filter by `?status=` and `?assignee=` works
+>
+> #### Task 2.2: Kanban Board UI
+> - **Do**: Build kanban board with 3 columns (To Do, In Progress, Done). Add drag-and-drop (use `@dnd-kit`). Task detail modal on click.
+> - **Files**: `frontend/src/components/Board/`, `frontend/src/components/TaskModal/`
+> - **Depends on**: 2.1
+> - **Done when**:
+>   - [ ] Tasks render in correct columns
+>   - [ ] Drag-and-drop updates status
+>   - [ ] Click opens detail modal
+>
+> #### Task 2.3: Team & Assignment
+> - **Do**: User list page. Assignment dropdown on task cards.
+> - **Files**: `frontend/src/components/TeamList/`, `frontend/src/components/AssignDropdown/`
+> - **Depends on**: 2.1
+> - **Done when**:
+>   - [ ] All team members visible
+>   - [ ] Can assign/reassign from board
+>
+> ### Phase 3: Integration & Ship (Week 4)
+>
+> #### Task 3.1: GitHub PR Linking
+> - **Do**: Add PR URL field to tasks. Fetch PR status via GitHub REST API (personal token auth). Display status badge on task card.
+> - **Files**: `backend/src/services/github.ts`, `frontend/src/components/PRBadge/`
+> - **Depends on**: 2.1
+> - **Done when**:
+>   - [ ] User can paste PR URL on a task
+>   - [ ] PR status (open/merged/closed) shows on card
+>
+> #### Task 3.2: UX Polish
+> - **Do**: Add keyboard shortcuts (N=new task, Esc=close modal). Loading states, error toasts, empty states. Clean minimal styling (Linear reference).
+> - **Files**: `frontend/src/hooks/useKeyboard.ts`, `frontend/src/components/`
+> - **Depends on**: 2.2
+> - **Done when**:
+>   - [ ] Keyboard shortcuts work
+>   - [ ] Loading/error states present
+>
+> #### Task 3.3: Deployment
+> - **Do**: Docker Compose setup for local + production. Basic CI with GitHub Actions (lint + test on push).
+> - **Files**: `docker-compose.yml`, `Dockerfile`, `.github/workflows/ci.yml`
+> - **Depends on**: All above
+> - **Done when**:
+>   - [ ] `docker compose up` runs full stack
+>   - [ ] CI passes on push
+>
+> ## Notes for Agent
+> - Use TypeScript throughout
+> - Follow existing ESLint + Prettier config
+> - Keep components small and composable — Linear-style simplicity
+> - Do not implement time tracking, calendar, or file attachments
+
+Mission complete.
 
 ---
 
 ## Why This Example Works
 
-1. **Questions were batched** (3 per batch, not 10 at once) — reduces cognitive load on the user.
-2. **Gaps were caught** (auth, database, GitHub scope) — Phase 2 prevented building the wrong thing.
-3. **Summary was confirmed** before any planning — alignment checkpoint.
-4. **Research was separated** from implementation — uncertainty handled explicitly.
-5. **Every task has a deliverable and acceptance criteria** — nothing vague.
-6. **Risks were named** with mitigation — the plan is honest about what could go wrong.
-7. **The plan is phase-sequenced** with dependencies — execution order is clear.
+1. **Questions used selectable options** — user picked A/B/C instead of typing paragraphs, making interaction fast.
+2. **Trivial items were auto-decided** (project structure, linting, git workflow) — listed in summary for transparency.
+3. **Gaps were caught** (auth, database, GitHub scope) — Phase 2 prevented building the wrong thing.
+4. **Summary was confirmed** before any planning — alignment checkpoint.
+5. **Research was separated** from implementation — uncertainty handled explicitly.
+6. **Every task has a deliverable and acceptance criteria** — nothing vague.
+7. **Risks were named** with mitigation — the plan is honest about what could go wrong.
+8. **The plan is phase-sequenced** with dependencies — execution order is clear.
+9. **Agent-executable version was offered and delivered** — ready to paste into a coding agent for implementation.

@@ -34,6 +34,10 @@ Use this after Phase 2 to confirm understanding with the user.
   1. [Most important quality attribute]
   2. [Second most important]
   3. [Third most important]
+
+### Auto-decided (defaults chosen, override if needed)
+- [item]: [default chosen] — [why]
+- [item]: [default chosen] — [why]
 ```
 
 ---
@@ -144,6 +148,62 @@ Use this to assemble the final plan in Phase 4.
 - **Estimated phases**: [count]
 - **Key decision points**: [list any decisions that may change the plan]
 ```
+
+---
+
+## Agent-Executable Plan Template
+
+Use this when the user requests an agent-optimized version of the plan. This format is designed to be pasted directly into a coding agent (e.g., Cursor Agent, Copilot) for implementation.
+
+**Key differences from the human-readable plan:**
+- Imperative tone — direct instructions, no conversational prose
+- File paths and code-level hints included where known
+- No risk register or overview narrative — only actionable content
+- Each task is a self-contained instruction block an agent can execute independently
+
+```markdown
+# [Project Name] — Agent Execution Plan
+
+## Context
+- Tech stack: [stack]
+- Key constraints: [1-2 sentence summary]
+
+## Tasks
+
+### [Phase 1 Name]
+
+#### Task 1.1: [Task Name]
+- **Do**: [Imperative instruction: "Create...", "Add...", "Implement..."]
+- **Files**: [file paths to create or modify, if known]
+- **Depends on**: [Task IDs or "None"]
+- **Done when**:
+  - [ ] [Verifiable criterion 1]
+  - [ ] [Verifiable criterion 2]
+
+#### Task 1.2: [Task Name]
+- **Do**: [instruction]
+- **Files**: [paths]
+- **Depends on**: [IDs]
+- **Done when**:
+  - [ ] [criterion]
+
+### [Phase 2 Name]
+
+#### Task 2.1: [Task Name]
+...
+
+## Notes for Agent
+- [Any global instructions: coding style, testing expectations, commit conventions]
+- [Anything the agent should NOT do: e.g., "Do not modify auth middleware"]
+```
+
+### Rules for Agent-Executable Output
+
+1. **No prose.** Every line must be an instruction, a file path, or a criterion.
+2. **Imperative voice.** "Create X" not "We need to create X".
+3. **Include file paths** when the codebase structure is known.
+4. **Keep each task under 5 lines.** If longer, break into sub-tasks.
+5. **Add a "Notes for Agent" section** for cross-cutting concerns (style, testing, etc.).
 
 ---
 
