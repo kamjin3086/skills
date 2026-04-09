@@ -1,0 +1,6 @@
+transformers>=4.49.0
+torch>=2.2.0
+accelerate>=0.30.0
+decord>=0.6.0
+num2words>=0.5.14
+mlx-vlm>=0.1.13; platform_system == "Darwin"
