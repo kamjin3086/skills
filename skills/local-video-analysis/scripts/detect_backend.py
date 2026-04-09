@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Detect local inference backends.
+Detect local inference backends and list available models.
+
+This script ONLY collects data. Model selection is done by the LLM.
 
 Supports:
+- Gateway processes (llama-swap, etc.) - detected first as they proxy other backends
 - Process-based port discovery via --ports
 - Fallback scan of common ports when --ports is omitted
-- Auto-scan common ports as fallback
 """
 
 import argparse
-import difflib
 import json
 import platform
 import socket
 import sys
 from dataclasses import asdict, dataclass
-from typing import Optional
 
 try:
     import httpx
@@ -30,30 +30,16 @@ class BackendInfo:
     port: int
     url: str
     status: str
+    is_gateway: bool
     models: list[str]
     vision_models: list[str]
 
 
-@dataclass
-class Recommendation:
-    backend_name: Optional[str]
-    backend_family: Optional[str]
-    model: Optional[str]
-    base_url: Optional[str]
-    score: float
-    reason: str
+# Gateway processes that proxy other backends - should be used preferentially
+GATEWAY_HINTS = ("llama-swap", "llamaswap", "llama_swap")
 
-
-FAMILY_PRIORITY = {
-    "llama.cpp-family": 0,
-    "vllm": 1,
-    "ollama": 2,
-    "transformers": 3,
-    "unknown-openai": 4,
-}
-
-VISION_HINTS = ("smolvlm", "llava", "vision", "vlm", "minicpm-v", "qwen-vl", "cogvlm")
-BASE_MODEL_ANCHOR = "smolvlm2500m"
+# Keywords indicating vision-capable models
+VISION_HINTS = ("smolvlm", "llava", "vision", "vlm", "minicpm-v", "qwen-vl", "cogvlm", "moondream")
 
 
 def is_port_open(host: str, port: int, timeout: float = 1.5) -> bool:
@@ -65,8 +51,22 @@ def is_port_open(host: str, port: int, timeout: float = 1.5) -> bool:
         sock.close()
 
 
-def classify_openai_backend(server_header: str, port: int) -> tuple[str, str]:
+def is_gateway(server_header: str, models: list[str]) -> bool:
+    """Check if this backend is a gateway/proxy like llama-swap."""
     h = (server_header or "").lower()
+    if any(g in h for g in GATEWAY_HINTS):
+        return True
+    # llama-swap often exposes multiple diverse models
+    if len(models) > 3:
+        return True
+    return False
+
+
+def classify_backend(server_header: str, port: int) -> tuple[str, str]:
+    """Classify backend by server header."""
+    h = (server_header or "").lower()
+    if any(g in h for g in GATEWAY_HINTS):
+        return "llama-swap", "gateway"
     if "lemonade" in h:
         return "lemonade", "llama.cpp-family"
     if "lm studio" in h or "lm-studio" in h or "lmstudio" in h:
@@ -77,152 +77,100 @@ def classify_openai_backend(server_header: str, port: int) -> tuple[str, str]:
         return "vllm", "vllm"
     if port == 1234:
         return "lmstudio", "llama.cpp-family"
-    return "openai-compatible", "unknown-openai"
+    if port == 11434:
+        return "ollama", "ollama"
+    return "openai-compatible", "unknown"
 
 
-def detect_ollama(host: str, port: int) -> BackendInfo:
+def detect_ollama(host: str, port: int) -> BackendInfo | None:
     url = f"http://{host}:{port}"
-    out = BackendInfo("ollama", "ollama", port, url, "not_running", [], [])
     if not is_port_open(host, port):
-        return out
+        return None
     try:
         resp = httpx.get(f"{url}/api/tags", timeout=5.0)
         resp.raise_for_status()
-        out.status = "running"
+        models = []
+        vision = []
         for m in resp.json().get("models", []):
             name = m.get("name", "")
             if name:
-                out.models.append(name)
+                models.append(name)
                 if any(k in name.lower() for k in VISION_HINTS):
-                    out.vision_models.append(name)
+                    vision.append(name)
+        return BackendInfo("ollama", "ollama", port, url, "running", False, models, vision)
     except Exception:
-        out.status = "unknown"
-    return out
+        return None
 
 
-def detect_openai_endpoint(host: str, port: int) -> BackendInfo:
+def detect_openai_endpoint(host: str, port: int) -> BackendInfo | None:
     url = f"http://{host}:{port}"
-    out = BackendInfo(f"openai-{port}", "unknown-openai", port, url, "not_running", [], [])
     if not is_port_open(host, port):
-        return out
+        return None
     try:
         resp = httpx.get(f"{url}/v1/models", timeout=5.0)
         resp.raise_for_status()
-        out.status = "running"
-        out.name, out.family = classify_openai_backend(resp.headers.get("server", ""), port)
+        server_header = resp.headers.get("server", "")
+        name, family = classify_backend(server_header, port)
+        models = []
+        vision = []
         for m in resp.json().get("data", []):
             mid = m.get("id", "")
             if mid:
-                out.models.append(mid)
+                models.append(mid)
                 if any(k in mid.lower() for k in VISION_HINTS):
-                    out.vision_models.append(mid)
+                    vision.append(mid)
+        gateway = is_gateway(server_header, models)
+        if gateway:
+            family = "gateway"
+        return BackendInfo(name, family, port, url, "running", gateway, models, vision)
     except Exception:
-        out.status = "unknown"
-    return out
+        return None
 
 
-def detect_llamacpp_health(host: str, port: int) -> BackendInfo:
+def detect_llamacpp_health(host: str, port: int) -> BackendInfo | None:
     url = f"http://{host}:{port}"
-    out = BackendInfo("llama.cpp", "llama.cpp-family", port, url, "not_running", [], [])
     if not is_port_open(host, port):
-        return out
+        return None
     try:
         resp = httpx.get(f"{url}/health", timeout=4.0)
         if resp.status_code == 200:
-            out.status = "running"
+            return BackendInfo("llama.cpp", "llama.cpp-family", port, url, "running", False, [], [])
     except Exception:
-        out.status = "unknown"
-    return out
+        pass
+    return None
 
 
-def detect_port(host: str, port: int) -> Optional[BackendInfo]:
+def detect_port(host: str, port: int) -> BackendInfo | None:
     """Try to identify what's running on a port."""
     if not is_port_open(host, port):
         return None
     
-    # Try Ollama first (port 11434 typical)
+    # Try Ollama API first (port 11434 typical)
     if port == 11434:
         info = detect_ollama(host, port)
-        if info.status == "running":
+        if info:
             return info
     
     # Try OpenAI-compatible /v1/models
     info = detect_openai_endpoint(host, port)
-    if info.status == "running":
+    if info:
         return info
     
     # Try llama.cpp /health
     info = detect_llamacpp_health(host, port)
-    if info.status == "running":
+    if info:
         return info
     
     # Try Ollama on non-standard port
     info = detect_ollama(host, port)
-    if info.status == "running":
+    if info:
         return info
     
     return None
 
 
-def normalize_model_name(name: str) -> str:
-    return "".join(ch for ch in name.lower() if ch.isalnum())
-
-
-def model_targets_for_os(os_name: str) -> list[str]:
-    if os_name == "darwin":
-        return ["SmolVLM2-500M-Video-Instruct-mlx", "SmolVLM2-500M-Video-Instruct"]
-    return ["SmolVLM2-500M-Video-Instruct-GGUF", "SmolVLM2-500M-Video-Instruct"]
-
-
-def model_similarity(candidate: str, targets: list[str], os_name: str) -> float:
-    c = normalize_model_name(candidate)
-    ratios = [difflib.SequenceMatcher(None, c, normalize_model_name(t)).ratio() for t in targets]
-    score = max(ratios) if ratios else 0.0
-    if BASE_MODEL_ANCHOR in c:
-        score += 0.22
-    if "smolvlm2" in c:
-        score += 0.08
-    if os_name == "darwin" and "mlx" in c:
-        score += 0.08
-    if os_name != "darwin" and "gguf" in c:
-        score += 0.08
-    return min(score, 1.0)
-
-
-def select_best(backends: list[BackendInfo], os_name: str) -> Recommendation:
-    running = [b for b in backends if b.status == "running" and b.models]
-    targets = model_targets_for_os(os_name)
-    
-    if not running:
-        return Recommendation(None, None, None, None, 0.0, "No running backend with models found.")
-    
-    best = None
-    for b in running:
-        pri = FAMILY_PRIORITY.get(b.family, 99)
-        pool = b.vision_models or b.models
-        if not pool:
-            continue
-        top_model, top_score = None, -1.0
-        for m in pool:
-            s = model_similarity(m, targets, os_name)
-            if s > top_score:
-                top_model, top_score = m, s
-        cand = (pri, -top_score, b.name, top_model, top_score, b.family, b.url)
-        if best is None or cand < best:
-            best = cand
-    
-    if best is None:
-        return Recommendation(None, None, None, None, 0.0, "No candidate model found.")
-    
-    pri, _, bname, model, score, family, url = best
-    if score < 0.45:
-        return Recommendation(bname, family, None, url, score,
-            f"No similar model to {', '.join(targets)}. Download manually.")
-    return Recommendation(bname, family, model, url, score, f"priority={pri}, similarity={score:.2f}")
-
-
-def detect_all(ports: list[int], host: str = "127.0.0.1") -> tuple[list[BackendInfo], Recommendation]:
-    """Detect backends on given ports."""
+def detect_all(ports: list[int], host: str = "127.0.0.1") -> list[BackendInfo]:
+    """Detect backends on given ports. Returns list sorted by priority (gateways first)."""
     if httpx is None:
         raise RuntimeError("httpx not installed. Run: pip install httpx")
     
@@ -232,57 +180,70 @@ def detect_all(ports: list[int], host: str = "127.0.0.1") -> tuple[list[BackendI
         if info:
             backends.append(info)
     
+    # Sort: gateways first, then by family priority
+    family_order = {"gateway": 0, "llama.cpp-family": 1, "vllm": 2, "ollama": 3, "unknown": 4}
+    backends.sort(key=lambda b: (0 if b.is_gateway else 1, family_order.get(b.family, 99)))
+    
+    return backends
+
+
+def recommended_models() -> dict:
+    """Return recommended model names for the LLM to look for."""
     os_name = platform.system().lower()
-    return backends, select_best(backends, os_name)
-
-
-def manual_guidance(os_name: str) -> str:
-    if os_name == "darwin":
-        return (
-            "macOS recommended: SmolVLM2-500M-Video-Instruct-mlx\n"
-            "Install: pip install -U mlx-vlm"
-        )
-    return (
-        "Recommended: SmolVLM2-500M-Video-Instruct-GGUF\n"
-        "Download and load in your backend."
-    )
+    return {
+        "os": os_name,
+        "target_models": [
+            "SmolVLM2-500M-Video-Instruct",
+            "SmolVLM2-2.2B-Video-Instruct",
+        ],
+        "preferred_format": "mlx" if os_name == "darwin" else "GGUF",
+        "download_guidance": {
+            "darwin": "For macOS: pip install -U mlx-vlm; then use mlx-community/SmolVLM2-500M-Video-Instruct-mlx",
+            "other": "Download SmolVLM2-500M-Video-Instruct-GGUF and load in your backend",
+        }
+    }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Detect local inference backends.")
-    parser.add_argument("--ports", type=str, default="",
-        help="Comma-separated ports to scan (from process detection)")
+    parser = argparse.ArgumentParser(description="Detect local inference backends and list models.")
+    parser.add_argument("--ports", type=str, default="", help="Comma-separated ports (from process detection)")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--json", action="store_true", help="Output JSON for LLM processing")
     args = parser.parse_args()
     
-    # Parse ports: explicit, or fallback to common defaults
     if args.ports:
         ports = [int(p.strip()) for p in args.ports.split(",") if p.strip().isdigit()]
     else:
-        ports = [11434, 1234, 8000, 8080]  # fallback defaults
+        ports = [8080, 11434, 1234, 8000]  # common defaults
     
-    backends, rec = detect_all(ports, args.host)
-    os_name = platform.system().lower()
+    backends = detect_all(ports, args.host)
+    recs = recommended_models()
+    
+    result = {
+        "os": recs["os"],
+        "scanned_ports": ports,
+        "backends": [asdict(b) for b in backends],
+        "target_models": recs["target_models"],
+        "preferred_format": recs["preferred_format"],
+        "download_guidance": recs["download_guidance"],
+    }
     
     if args.json:
-        print(json.dumps({
-            "os_name": os_name,
-            "backends": [asdict(b) for b in backends],
-            "recommendation": asdict(rec),
-            "manual_guidance": manual_guidance(os_name),
-        }, ensure_ascii=False, indent=2))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        print(f"OS: {os_name}, scanned ports: {ports}")
+        print(f"OS: {recs['os']}, scanned: {ports}")
+        if not backends:
+            print("No backends detected.")
         for b in backends:
-            print(f"  {b.name} [{b.family}] {b.url} models={len(b.models)}")
-        if rec.model:
-            print(f"Selected: {rec.backend_name} → {rec.model}")
-        else:
-            print(f"No suitable model. {rec.reason}")
-            print(manual_guidance(os_name))
+            gw = " [GATEWAY]" if b.is_gateway else ""
+            print(f"  {b.name} [{b.family}]{gw} {b.url}")
+            print(f"    models: {b.models[:5]}{'...' if len(b.models) > 5 else ''}")
+            if b.vision_models:
+                print(f"    vision: {b.vision_models}")
+        print(f"\nTarget models: {recs['target_models']}")
+        print(f"Preferred format: {recs['preferred_format']}")
     
-    sys.exit(0 if rec.model else 1)
+    sys.exit(0 if backends else 1)
 
 
 if __name__ == "__main__":

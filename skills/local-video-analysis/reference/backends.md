@@ -1,38 +1,43 @@
-# Backend Notes
+# Backend Detection
 
-## Selection Priority
+## Gateway Priority
 
-1. `llama.cpp-family` (lemonade, lmstudio, llama.cpp) - highest
-2. `vllm`
-3. `ollama` - use when user requests or already running
-4. `transformers` - fallback (GPU-only by default)
+Gateways like `llama-swap` proxy multiple backends. They should be used first when detected.
 
-## Detection
+Detection output marks them with `is_gateway: true`.
 
-Ports typically come from process detection by the AI agent.
+## Detection Output
 
 ```bash
-# Explicit ports from process scan
-python scripts/detect_backend.py --ports 8080,11434
-
-# Fallback to common defaults
-python scripts/detect_backend.py
+python scripts/detect_backend.py --ports 8080,11434 --json
 ```
 
-## Explicit Backend
-
-Skip detection by providing all backend info:
-
-```bash
-python scripts/run_video_pipeline.py video.mp4 \
-  --backend-url http://127.0.0.1:8080 \
-  --backend-family llama.cpp-family \
-  --model SmolVLM2-500M-Video-Instruct-GGUF
+Returns:
+```json
+{
+  "backends": [
+    {
+      "name": "llama-swap",
+      "family": "gateway",
+      "url": "http://127.0.0.1:8080",
+      "is_gateway": true,
+      "models": ["SmolVLM2-500M-Video-Instruct-GGUF", "llama3", ...],
+      "vision_models": ["SmolVLM2-500M-Video-Instruct-GGUF"]
+    }
+  ],
+  "target_models": ["SmolVLM2-500M-Video-Instruct", ...],
+  "preferred_format": "GGUF"
+}
 ```
 
-## Preferred Models
+## LLM Decision Flow
 
-- Non-macOS: `SmolVLM2-500M-Video-Instruct-GGUF`
-- macOS: `SmolVLM2-500M-Video-Instruct-mlx`
+1. Parse backends from JSON
+2. Look for `is_gateway: true` → use that backend first
+3. Check `models[]` for any of `target_models`
+4. If found → use it
+5. If not found → tell user which model to download, don't guess
 
-If no matching model found, provide download guidance to user.
+## No Code Matching
+
+The script does NOT auto-select models. It returns the list; LLM decides by reading names.

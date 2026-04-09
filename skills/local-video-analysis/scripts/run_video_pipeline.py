@@ -2,89 +2,81 @@
 """
 Local video analysis pipeline.
 
-Supports:
-- Explicit backend via --backend-url
-- Auto-detection via --ports (from process scan)
-- YouTube URL → delegate to download skill
+This script handles frame extraction and API calls.
+Backend/model selection is done by the LLM before calling this script.
+
+Modes:
+  --info    : Output video metadata only (LLM uses this to decide parameters)
+  (default) : Run full analysis
+
+Required args for analysis (from LLM decision):
+  --backend-url, --backend-family, --model
 """
 
 import argparse
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Literal
-from urllib.parse import urlparse
 
 # Fix imports to work from any directory
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from detect_backend import detect_all, manual_guidance, Recommendation
 from vision_client import VisionClient
 
 
-def is_url(value: str) -> bool:
-    p = urlparse(value)
-    return p.scheme in {"http", "https"} and bool(p.netloc)
+def ffmpeg_exists() -> bool:
+    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 
 
-def is_youtube_url(value: str) -> bool:
-    p = urlparse(value)
-    return p.netloc in {"youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"}
-
-
-def handle_url_input(url: str) -> str:
-    """
-    Handle URL input by delegating to download skill.
-    Returns local file path or raises with guidance.
-    """
-    # This function is meant to be called by the AI agent
-    # The agent should:
-    # 1. Check if youtube-downloader skill exists
-    # 2. If yes, use it to download and return local path
-    # 3. If no, ask user how to proceed
-    #
-    # For script standalone use, we raise with clear message
-    raise RuntimeError(
-        f"URL input detected: {url}\n\n"
-        "AI Agent should:\n"
-        "1. Check for youtube-downloader skill (or similar)\n"
-        "2. Use that skill to download video first\n"
-        "3. Then call this pipeline with local file path\n\n"
-        "If no download skill available, ask user:\n"
-        "- Install a video download skill, OR\n"
-        "- Provide local video file path"
-    )
-
-
-def scene_timestamps(video_path: str, max_frames: int, detector: Literal["adaptive", "content"]) -> list[float]:
+def get_video_info(video_path: str) -> dict:
+    """Get video metadata using ffprobe."""
+    if not ffmpeg_exists():
+        return {"error": "ffprobe not found", "duration": 0, "width": 0, "height": 0, "fps": 0}
+    
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,r_frame_rate,duration:format=duration",
+        "-of", "json", video_path
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return {"error": proc.stderr.strip(), "duration": 0, "width": 0, "height": 0, "fps": 0}
+    
     try:
-        from scenedetect import SceneManager, open_video
-        from scenedetect.detectors import AdaptiveDetector, ContentDetector
-    except ImportError:
-        return []
-    try:
-        video = open_video(video_path)
-        manager = SceneManager()
-        if detector == "adaptive":
-            manager.add_detector(AdaptiveDetector(adaptive_threshold=3.0))
+        data = json.loads(proc.stdout)
+        stream = data.get("streams", [{}])[0]
+        fmt = data.get("format", {})
+        
+        # Parse duration
+        duration = float(stream.get("duration", 0) or fmt.get("duration", 0) or 0)
+        
+        # Parse fps (format: "30/1" or "29.97")
+        fps_str = stream.get("r_frame_rate", "0/1")
+        if "/" in fps_str:
+            num, den = fps_str.split("/")
+            fps = float(num) / float(den) if float(den) > 0 else 0
         else:
-            manager.add_detector(ContentDetector(threshold=27.0))
-        manager.detect_scenes(video, show_progress=False)
-        mids = [(s.get_seconds() + e.get_seconds()) / 2 for s, e in manager.get_scene_list() if e.get_seconds() > s.get_seconds()]
-        if len(mids) <= max_frames:
-            return mids
-        step = (len(mids) - 1) / (max_frames - 1)
-        return [mids[round(i * step)] for i in range(max_frames)]
-    except Exception:
-        return []
+            fps = float(fps_str)
+        
+        return {
+            "duration": round(duration, 2),
+            "width": stream.get("width", 0),
+            "height": stream.get("height", 0),
+            "fps": round(fps, 2),
+        }
+    except Exception as e:
+        return {"error": str(e), "duration": 0, "width": 0, "height": 0, "fps": 0}
 
 
 def extract_at_timestamps(video_path: str, timestamps: list[float], max_side: int | None) -> list[str]:
+    """Extract frames at specific timestamps using ffmpeg."""
     frames = []
     vf = f"scale='if(gt(iw,ih),min(iw,{max_side}),-2)':'if(gt(iw,ih),-2,min(ih,{max_side}))'" if max_side else "null"
     with tempfile.TemporaryDirectory(prefix="frames_") as tmp:
@@ -98,29 +90,67 @@ def extract_at_timestamps(video_path: str, timestamps: list[float], max_side: in
     return frames
 
 
-def extract_frames_with_strategy(client: VisionClient, video_path: str, max_frames: int, max_side: int | None,
-                                  sampling: str, scene_detector: str) -> list[str]:
-    if sampling == "uniform" or not client.ffmpeg_exists():
-        return client.extract_frames(video_path, max_frames, max_side)
+def uniform_timestamps(duration: float, count: int) -> list[float]:
+    """Generate uniformly distributed timestamps."""
+    if count <= 1 or duration <= 0:
+        return [0.0]
+    step = duration / (count - 1)
+    return [min(duration, i * step) for i in range(count)]
+
+
+def scene_timestamps(video_path: str, max_frames: int) -> list[float] | None:
+    """Detect scene boundaries. Returns None if scenedetect not available."""
+    try:
+        from scenedetect import SceneManager, open_video
+        from scenedetect.detectors import AdaptiveDetector
+    except ImportError:
+        return None
+    try:
+        video = open_video(video_path)
+        manager = SceneManager()
+        manager.add_detector(AdaptiveDetector(adaptive_threshold=3.0))
+        manager.detect_scenes(video, show_progress=False)
+        mids = [(s.get_seconds() + e.get_seconds()) / 2 for s, e in manager.get_scene_list() if e.get_seconds() > s.get_seconds()]
+        if len(mids) <= max_frames:
+            return mids
+        step = (len(mids) - 1) / (max_frames - 1)
+        return [mids[round(i * step)] for i in range(max_frames)]
+    except Exception:
+        return None
+
+
+def extract_frames(video_path: str, duration: float, max_frames: int, max_side: int | None, sampling: str) -> tuple[list[str], str]:
+    """Extract frames. Returns (frames, actual_sampling_used)."""
     
-    scene_ts = scene_timestamps(video_path, max_frames, scene_detector)
     if sampling == "scene":
-        return extract_at_timestamps(video_path, scene_ts, max_side) if scene_ts else client.extract_frames(video_path, max_frames, max_side)
+        ts = scene_timestamps(video_path, max_frames)
+        if ts:
+            return extract_at_timestamps(video_path, ts, max_side), "scene"
+        # Fallback
+        ts = uniform_timestamps(duration, max_frames)
+        return extract_at_timestamps(video_path, ts, max_side), "uniform (scene unavailable)"
     
-    # hybrid
-    half = max(1, max_frames // 2)
-    out = extract_at_timestamps(video_path, scene_ts[:half], max_side) if scene_ts else []
-    if len(out) < max_frames:
-        out.extend(client.extract_frames(video_path, max_frames - len(out), max_side))
-    return out[:max_frames]
+    if sampling == "hybrid":
+        scene_ts = scene_timestamps(video_path, max_frames // 2)
+        if scene_ts:
+            uniform_ts = uniform_timestamps(duration, max_frames - len(scene_ts))
+            ts = sorted(set(scene_ts + uniform_ts))[:max_frames]
+            return extract_at_timestamps(video_path, ts, max_side), "hybrid"
+        # Fallback
+        ts = uniform_timestamps(duration, max_frames)
+        return extract_at_timestamps(video_path, ts, max_side), "uniform (scene unavailable)"
+    
+    # uniform
+    ts = uniform_timestamps(duration, max_frames)
+    return extract_at_timestamps(video_path, ts, max_side), "uniform"
 
 
-def summarize_long_video(client: VisionClient, video_path: str, prompt: str, segment_seconds: int,
-                         max_frames: int, max_side: int | None) -> str:
-    duration = client.get_duration_ffprobe(video_path) if client.ffmpeg_exists() else 0.0
-    if duration <= 0 or segment_seconds <= 0 or duration <= segment_seconds:
-        frames = client.extract_frames(video_path, max_frames, max_side)
-        return client.generate_multimodal(f"Frames from video:\n{prompt}", frames)
+def summarize_segments(client: VisionClient, video_path: str, duration: float, prompt: str, segment_seconds: int, max_frames: int, max_side: int | None) -> tuple[str, dict]:
+    """Two-pass summarization for long videos. Returns (response, stats)."""
+    if duration <= 0 or duration <= segment_seconds:
+        frames, sampling = extract_frames(video_path, duration, max_frames, max_side, "uniform")
+        response = client.generate_multimodal(f"{len(frames)} frames.\n{prompt}", frames)
+        return response, {"segments": 1, "frames_total": len(frames), "sampling": sampling}
     
     segments = []
     s = 0.0
@@ -130,93 +160,95 @@ def summarize_long_video(client: VisionClient, video_path: str, prompt: str, seg
     
     per = max(2, max_frames // len(segments))
     partial = []
-    for idx, (s, e) in enumerate(segments, 1):
-        ts = [s + i * ((e - s) / max(1, per - 1)) for i in range(per)]
+    total_frames = 0
+    for idx, (start, end) in enumerate(segments, 1):
+        ts = uniform_timestamps(end - start, per)
+        ts = [start + t for t in ts]
         frames = extract_at_timestamps(video_path, ts, max_side)
+        total_frames += len(frames)
         if frames:
-            seg_prompt = f"Segment {idx}/{len(segments)} ({s:.0f}s-{e:.0f}s). Key events only.\nObjective: {prompt}"
+            seg_prompt = f"Segment {idx}/{len(segments)} ({start:.0f}s-{end:.0f}s). Key events only."
             partial.append(f"[SEG {idx}] {client.generate_multimodal(seg_prompt, frames)}")
     
     if not partial:
-        frames = client.extract_frames(video_path, max_frames, max_side)
-        return client.generate_multimodal(f"Frames from video:\n{prompt}", frames)
+        frames, sampling = extract_frames(video_path, duration, max_frames, max_side, "uniform")
+        response = client.generate_multimodal(f"{len(frames)} frames.\n{prompt}", frames)
+        return response, {"segments": 1, "frames_total": len(frames), "sampling": sampling}
     
-    return client.generate_text(
-        f"Segment summaries from one video. Produce timeline + summary.\nObjective: {prompt}\n\n" + "\n\n".join(partial)
-    )
+    response = client.generate_text(f"Segment summaries. Produce timeline + summary.\nObjective: {prompt}\n\n" + "\n\n".join(partial))
+    return response, {"segments": len(segments), "frames_total": total_frames, "sampling": "uniform (segmented)"}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Local video analysis pipeline.")
-    parser.add_argument("video", help="Local video path or URL")
+    parser = argparse.ArgumentParser(description="Analyze a local video file.")
+    parser.add_argument("video", help="Path to local video file")
+    
+    # Info mode (no backend needed)
+    parser.add_argument("--info", action="store_true", help="Output video metadata only, for LLM to decide parameters")
+    
+    # Backend options (required for analysis)
+    parser.add_argument("--backend-url", help="Backend URL (from LLM selection)")
+    parser.add_argument("--backend-family", choices=["ollama", "llama.cpp-family", "vllm", "gateway", "unknown"])
+    parser.add_argument("--model", help="Model name (from LLM selection)")
+    
+    # Analysis options
     parser.add_argument("--prompt", default="Summarize key events as a timeline.")
     parser.add_argument("--max-frames", type=int, default=12)
-    parser.add_argument("--max-side", type=int, default=640)
+    parser.add_argument("--max-side", type=int, default=640, help="Max frame dimension; 0 disables resize")
     parser.add_argument("--sampling", choices=["uniform", "scene", "hybrid"], default="hybrid")
-    parser.add_argument("--scene-detector", choices=["adaptive", "content"], default="adaptive")
-    parser.add_argument("--segment-seconds", type=int, default=0)
-    
-    # Backend options - explicit or auto-detect
-    parser.add_argument("--backend-url", help="Explicit backend URL")
-    parser.add_argument("--backend-family", choices=["ollama", "llama.cpp-family", "vllm", "unknown-openai"])
-    parser.add_argument("--model", help="Model name")
-    parser.add_argument("--ports", default="", help="Ports to scan (comma-separated, from process detection)")
+    parser.add_argument("--segment-seconds", type=int, default=0, help="Segment long videos (0=disabled)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    
-    # Handle URL input
-    if is_url(args.video):
-        handle_url_input(args.video)
     
     video_path = Path(args.video)
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
     
-    # Resolve backend
-    if args.backend_url and args.backend_family and args.model:
-        # Explicit backend
-        rec = Recommendation(
-            backend_name="explicit",
-            backend_family=args.backend_family,
-            model=args.model,
-            base_url=args.backend_url,
-            score=1.0,
-            reason="explicitly provided"
-        )
-    else:
-        # Auto-detect
-        ports = [int(p.strip()) for p in args.ports.split(",") if p.strip().isdigit()] if args.ports else [11434, 1234, 8000, 8080]
-        backends, rec = detect_all(ports)
-        
-        if not rec.model:
-            import platform
-            raise RuntimeError(f"No suitable model found.\n{rec.reason}\n{manual_guidance(platform.system().lower())}")
+    # Info mode: just return metadata
+    if args.info:
+        info = get_video_info(str(video_path))
+        info["video"] = str(video_path)
+        info["suggested_max_frames"] = min(24, max(8, int(info.get("duration", 60) / 5)))
+        info["suggested_segment_seconds"] = 120 if info.get("duration", 0) > 180 else 0
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+        return
     
-    client = VisionClient(rec.backend_family, rec.base_url, rec.model)
+    # Analysis mode: require backend args
+    if not args.backend_url or not args.backend_family or not args.model:
+        parser.error("Analysis requires --backend-url, --backend-family, and --model")
+    
+    # Get video info for duration
+    info = get_video_info(str(video_path))
+    duration = info.get("duration", 0)
+    
+    client = VisionClient(args.backend_family, args.backend_url, args.model)
     max_side = args.max_side if args.max_side > 0 else None
     
     if args.segment_seconds > 0:
-        response = summarize_long_video(client, str(video_path), args.prompt, args.segment_seconds, args.max_frames, max_side)
+        response, stats = summarize_segments(client, str(video_path), duration, args.prompt, args.segment_seconds, args.max_frames, max_side)
     else:
-        frames = extract_frames_with_strategy(client, str(video_path), args.max_frames, max_side, args.sampling, args.scene_detector)
+        frames, sampling = extract_frames(str(video_path), duration, args.max_frames, max_side, args.sampling)
         response = client.generate_multimodal(f"{len(frames)} frames from video.\n{args.prompt}", frames)
+        stats = {"frames_extracted": len(frames), "sampling_used": sampling}
     
     result = {
-        "backend": rec.backend_name,
-        "backend_family": rec.backend_family,
-        "model": rec.model,
-        "base_url": rec.base_url,
         "video": str(video_path),
+        "video_duration": duration,
+        "backend_url": args.backend_url,
+        "backend_family": args.backend_family,
+        "model": args.model,
         "prompt": args.prompt,
+        "stats": stats,
         "response": response,
     }
     
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        print(f"Backend: {rec.backend_name} ({rec.backend_family})")
-        print(f"Model: {rec.model}")
-        print(f"Video: {video_path}")
+        print(f"Video: {video_path} ({duration:.1f}s)")
+        print(f"Backend: {args.backend_url}")
+        print(f"Model: {args.model}")
+        print(f"Stats: {stats}")
         print("-" * 40)
         print(response)
 
@@ -225,5 +257,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(json.dumps({"error": str(e)}, ensure_ascii=False), file=sys.stderr)
         sys.exit(1)
