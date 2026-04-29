@@ -1,5 +1,5 @@
 ---
-name: omni-router-workflow
+name: lemonade-omni-router-workflow
 description: Orchestrate multimodal workflows through Lemonade OmniRouter using OpenAI-compatible tool-calling. Use when an agent must analyze images, edit/generate images, transcribe audio, generate speech, and optionally produce a narrated video with ffmpeg.
 triggers:
 - omni-router

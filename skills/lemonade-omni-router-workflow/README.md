@@ -1,4 +1,4 @@
-# omni-router-skill
+# lemonade-omni-router-workflow
 
 This directory contains a reusable skill package for integrating Lemonade OmniRouter into agent workflows.
 
