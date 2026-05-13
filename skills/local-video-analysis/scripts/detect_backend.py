@@ -5,15 +5,22 @@ Detect local inference backends and list available models.
 This script ONLY collects data. Model selection is done by the LLM.
 
 Supports:
-- Gateway processes (llama-swap, etc.) - detected first as they proxy other backends
-- Process-based port discovery via --ports
-- Fallback scan of common ports when --ports is omitted
+- Process scanning (ps/tasklist) to find actively running backend processes
+- Port probing via OpenAI-compatible /v1/models, Ollama /api/tags, llama.cpp /health
+- Gateway detection (llama-swap etc.) — promoted to highest priority
+- Fallback to common default ports when nothing is found via processes
+
+Usage:
+  python detect_backend.py --json           # auto-scan then probe
+  python detect_backend.py --ports 8080,11434 --json  # probe specific ports only
 """
 
 import argparse
 import json
 import platform
+import re
 import socket
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 
@@ -39,7 +46,23 @@ class BackendInfo:
 GATEWAY_HINTS = ("llama-swap", "llamaswap", "llama_swap")
 
 # Keywords indicating vision-capable models
-VISION_HINTS = ("smolvlm", "llava", "vision", "vlm", "minicpm-v", "qwen-vl", "cogvlm", "moondream")
+VISION_HINTS = ("smolvlm", "llava", "vision", "vlm", "minicpm-v", "qwen-vl", "qwen2-vl", "qwen2.5-vl",
+                "gemma", "cogvlm", "moondream", "internvl", "phi-3.5-vision")
+
+# Known backend executables → (family, [default_ports])
+BACKEND_PROCESS_HINTS: dict[str, tuple[str, list[int]]] = {
+    "llama-swap":   ("gateway",          [8080, 8000]),
+    "llamaswap":    ("gateway",          [8080, 8000]),
+    "llama_swap":   ("gateway",          [8080, 8000]),
+    "llama-server": ("llama.cpp-family", [8000, 8080]),
+    "llama.cpp":    ("llama.cpp-family", [8000, 8080]),
+    "lmstudio":     ("llama.cpp-family", [1234]),
+    "lm-studio":    ("llama.cpp-family", [1234]),
+    "ollama":       ("ollama",           [11434]),
+    "vllm":         ("vllm",             [8000]),
+    "lemonade":     ("llama.cpp-family", [13305]),
+    "jan":          ("llama.cpp-family", [1337]),
+}
 
 
 def is_port_open(host: str, port: int, timeout: float = 1.5) -> bool:
@@ -169,13 +192,55 @@ def detect_port(host: str, port: int) -> BackendInfo | None:
     return None
 
 
+def scan_processes() -> list[int]:
+    """Scan running processes for known backend executables.
+    
+    Returns a list of likely ports derived from process command lines.
+    Uses ps on Unix/macOS, tasklist + wmic on Windows.
+    """
+    found_ports: set[int] = set()
+    try:
+        if platform.system() == "Windows":
+            # wmic gives us the full command line on Windows
+            result = subprocess.run(
+                ["wmic", "process", "get", "Name,CommandLine"],
+                capture_output=True, text=True, timeout=8
+            )
+            lines = result.stdout.splitlines()
+        else:
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True, text=True, timeout=8
+            )
+            lines = result.stdout.splitlines()
+
+        for line in lines:
+            line_lower = line.lower()
+            for hint, (family, default_ports) in BACKEND_PROCESS_HINTS.items():
+                if hint in line_lower:
+                    # Try to extract explicit --port / -p from the command line
+                    port_match = re.search(r'(?:--port|-p)\s+(\d{4,5})', line)
+                    if port_match:
+                        found_ports.add(int(port_match.group(1)))
+                    else:
+                        found_ports.update(default_ports)
+                    break  # one match per line is enough
+    except Exception:
+        pass
+    return sorted(found_ports)
+
+
 def detect_all(ports: list[int], host: str = "127.0.0.1") -> list[BackendInfo]:
     """Detect backends on given ports. Returns list sorted by priority (gateways first)."""
     if httpx is None:
         raise RuntimeError("httpx not installed. Run: pip install httpx")
     
     backends = []
+    seen_ports: set[int] = set()
     for port in ports:
+        if port in seen_ports:
+            continue
+        seen_ports.add(port)
         info = detect_port(host, port)
         if info:
             backends.append(info)
@@ -193,13 +258,16 @@ def recommended_models() -> dict:
     return {
         "os": os_name,
         "target_models": [
+            "Gemma-4-E4B-instruct",   # best trade-off per benchmark
+            "Qwen2.5-VL-7B-Instruct",
+            "MiniCPM-V-4.6",
             "SmolVLM2-500M-Video-Instruct",
-            "SmolVLM2-2.2B-Video-Instruct",
         ],
         "preferred_format": "mlx" if os_name == "darwin" else "GGUF",
         "download_guidance": {
-            "darwin": "For macOS: pip install -U mlx-vlm; then use mlx-community/SmolVLM2-500M-Video-Instruct-mlx",
-            "other": "Download SmolVLM2-500M-Video-Instruct-GGUF and load in your backend",
+            "darwin": "macOS: load via LM Studio → GGUF, or mlx-community GGUF models",
+            "linux": "Linux: load GGUF in llama-server or llama-swap; or use Ollama pull",
+            "windows": "Windows: LM Studio (GGUF) or llama-swap; any vision model from Hugging Face",
         }
     }
 
@@ -211,16 +279,22 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output JSON for LLM processing")
     args = parser.parse_args()
     
+    # Discover ports: explicit args > process scan > common defaults
+    process_ports: list[int] = []
     if args.ports:
         ports = [int(p.strip()) for p in args.ports.split(",") if p.strip().isdigit()]
     else:
-        ports = [8080, 11434, 1234, 8000]  # common defaults
+        process_ports = scan_processes()
+        fallback = [8080, 13305, 11434, 1234, 8101, 1337]
+        # merge: process-discovered first, then fallback (deduped)
+        ports = process_ports + [p for p in fallback if p not in process_ports]
     
     backends = detect_all(ports, args.host)
     recs = recommended_models()
     
     result = {
         "os": recs["os"],
+        "process_discovered_ports": process_ports if not args.ports else [],
         "scanned_ports": ports,
         "backends": [asdict(b) for b in backends],
         "target_models": recs["target_models"],

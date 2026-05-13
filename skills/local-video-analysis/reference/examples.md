@@ -1,63 +1,79 @@
-# Examples
+# Examples — video-analyzer cli.py
 
-## Full Workflow
+All examples use `$PROJECT_DIR` and `$PYTHON` as configured in SKILL.md Setup.
 
-```bash
-# 1. Detect backends (LLM reads this)
-python scripts/detect_backend.py --ports 8080 --json
-
-# 2. Get video info (LLM uses this to tune parameters)
-python scripts/run_video_pipeline.py video.mp4 --info
-
-# 3. Run analysis with LLM-chosen parameters
-python scripts/run_video_pipeline.py video.mp4 \
-  --backend-url http://127.0.0.1:8080 \
-  --backend-family gateway \
-  --model SmolVLM2-500M-Video-Instruct-GGUF \
-  --max-frames 16 \
-  --prompt "Summarize key events as a timeline"
-```
-
-## Video Info Output
-
-```json
-{
-  "video": "video.mp4",
-  "duration": 125.5,
-  "width": 1920,
-  "height": 1080,
-  "fps": 30,
-  "suggested_max_frames": 24,
-  "suggested_segment_seconds": 0
-}
-```
-
-LLM can use this to decide:
-- Short video (<60s): `--max-frames 8-12`
-- Medium video (1-3min): `--max-frames 12-16`
-- Long video (>3min): `--max-frames 16-24` or use `--segment-seconds 120`
-
-## Long Video (segmented)
+## Describe — What happens in this video?
 
 ```bash
-python scripts/run_video_pipeline.py video.mp4 \
-  --backend-url http://127.0.0.1:8080 \
-  --backend-family gateway \
-  --model SmolVLM2-500M-Video-Instruct-GGUF \
-  --segment-seconds 120 \
-  --max-frames 24 \
-  --prompt "Produce a full timeline of events"
+# Default (8 frames)
+$PYTHON $PROJECT_DIR/cli.py describe video.mp4
+
+# Ask a specific question
+$PYTHON $PROJECT_DIR/cli.py describe video.mp4 -q "Is anyone writing code on screen?"
+
+# More frames for complex/long video
+$PYTHON $PROJECT_DIR/cli.py describe video.mp4 -f 16
+
+# JSON output (for programmatic parsing)
+$PYTHON $PROJECT_DIR/cli.py describe video.mp4 --format json
+# → {"result": "The video shows..."}
 ```
 
-## Speed vs Quality
+## Search — Find moments matching a description
 
 ```bash
-# Faster (lower resolution, fewer frames)
---max-side 512 --max-frames 8
-
-# More detail
---max-side 768 --max-frames 20
+$PYTHON $PROJECT_DIR/cli.py search video.mp4 "child interacting with robot"
+$PYTHON $PROJECT_DIR/cli.py search video.mp4 "person raises hand" --format json
+# → [{"timestamp": 12.4, "description": "A child reaches toward the robot's head"}]
 ```
+
+## Subtitle — Generate .srt subtitles
+
+```bash
+# Speech subtitles via Whisper (recommended)
+$PYTHON $PROJECT_DIR/cli.py subtitle video.mp4 --mode whisper -o video.srt
+$PYTHON $PROJECT_DIR/cli.py subtitle video.mp4 --mode whisper --whisper-lang en -o video.srt
+
+# Scene-description subtitles (no speech required)
+$PYTHON $PROJECT_DIR/cli.py subtitle video.mp4 --mode visual -o video.srt
+```
+
+## Translate — Convert .srt to another language
+
+```bash
+# Translate an existing .srt
+$PYTHON $PROJECT_DIR/cli.py translate --srt video.srt --lang Chinese -o video.zh.srt
+
+# Generate subtitles and translate in one step
+$PYTHON $PROJECT_DIR/cli.py translate video.mp4 --lang Japanese -o video.ja.srt
+```
+
+## Full pipeline: subtitle → translate
+
+```bash
+$PYTHON $PROJECT_DIR/cli.py subtitle lecture.mp4 --mode whisper --whisper-lang en -o lecture.srt
+$PYTHON $PROJECT_DIR/cli.py translate --srt lecture.srt --lang Chinese -o lecture.zh.srt
+```
+
+## JSON output for programmatic use
+
+```bash
+$PYTHON $PROJECT_DIR/cli.py describe video.mp4 --format json
+$PYTHON $PROJECT_DIR/cli.py search video.mp4 "person falls" --format json
+$PYTHON $PROJECT_DIR/cli.py subtitle video.mp4 --mode whisper --format json
+```
+
+## Frame count guidance
+
+| Video length | Recommended `-f` |
+|---|---|
+| < 1 min | 4–8 |
+| 1–5 min | 8–16 |
+| 5–30 min | 16–32 |
+| > 30 min | 32 per segment |
+
+If more frames don't improve quality → reduce `FRAME_SIZE=512` in `.env` instead.
+
 
 ## Ollama Backend
 
