@@ -1,5 +1,5 @@
 ---
-name: omni-router-workflow
+name: lemonade-omni-router-workflow
 description: Orchestrate multimodal workflows through Lemonade OmniRouter using OpenAI-compatible tool-calling. Use when an agent must analyze images, edit/generate images, transcribe audio, generate speech, and optionally produce a narrated video with ffmpeg.
 triggers:
 - omni-router
@@ -97,9 +97,11 @@ Before executing any multimodal chain:
    - `POST /v1/audio/transcriptions`
 4. If capabilities are missing, return an explicit fallback plan instead of failing late.
 
-Use the bundled script at `scripts/discover_omni_router_capabilities.sh` for quick discovery.
+Use the bundled script at `scripts/discover_omni_router_capabilities.py` for capability discovery (canonical implementation).
 
-On Windows-first environments, use `scripts/discover_omni_router_capabilities.ps1`.
+If needed, platform wrappers are available:
+- `scripts/discover_omni_router_capabilities.sh`
+- `scripts/discover_omni_router_capabilities.ps1`
 
 ## Prompting Boundary (Important)
 
@@ -230,9 +232,26 @@ Always report which fallback path was selected and why.
 Use this short checklist before first real run in any new environment:
 1. Read this skill and confirm required inputs are provided.
 2. Run capability discovery and confirm endpoint/label readiness.
-3. Select downloaded models first for each required modality.
-4. Perform one tiny smoke call per modality (vision/image/tts/transcription as needed).
+3. Run live smoke tests for runnable modalities.
+4. Select downloaded models first for each required modality.
 5. Start production workflow only after smoke calls succeed.
+
+Suggested commands:
+
+```bash
+python scripts/discover_omni_router_capabilities.py --strict-ready --out-file ./omni_capabilities.json
+python scripts/smoke_test_omni_router.py --strict --out-file ./omni_smoke_test.json
+```
+
+## Agent Consumption Contract
+
+When another agent loads this skill, treat the following as mandatory preflight:
+1. Execute discovery in strict mode.
+2. Execute smoke test in strict mode.
+3. Persist both JSON reports in the working directory.
+4. If either check fails, produce a fallback plan and stop short of full production run.
+
+This contract keeps behavior deterministic across different hosts and model inventories.
 
 ## Operator Notes
 
