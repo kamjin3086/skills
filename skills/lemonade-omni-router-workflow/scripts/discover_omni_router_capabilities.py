@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -65,6 +66,72 @@ def normalize_label(label: Any) -> str:
     return str(label).strip().lower().replace("_", "-")
 
 
+OMNI_NAME_RE = re.compile(r"^LMX-Omni-(?P<size>[0-9]+(?:\.[0-9]+)?B)-(?P<class>[A-Za-z0-9-]+)(?:-.+)?$")
+MIN_COLLECTION_CHAT_VERSION = (10, 7, 0)
+
+
+def parse_version(version: Any) -> tuple[int, int, int] | None:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", str(version))
+    if not match:
+        return None
+    return tuple(int(match.group(i)) for i in range(1, 4))
+
+
+def version_at_least(version: Any, minimum: tuple[int, int, int]) -> bool:
+    parsed = parse_version(version)
+    return parsed is not None and parsed >= minimum
+
+
+def is_omni_collection(model: dict[str, Any]) -> bool:
+    if model.get("recipe") != "collection.omni":
+        return False
+    model_id = str(model.get("id", "")).strip()
+    return bool(OMNI_NAME_RE.match(model_id) or model.get("components"))
+
+
+def omni_collection_score(model: dict[str, Any]) -> tuple[int, str]:
+    model_id = str(model.get("id", "")).strip()
+    labels = model.get("labels")
+    normalized_labels = {normalize_label(v) for v in labels} if isinstance(labels, list) else set()
+    score = 0
+    if model.get("downloaded") is True:
+        score += 100
+    if "custom" in normalized_labels or "custom" in model_id.lower():
+        score += 50
+    if OMNI_NAME_RE.match(model_id):
+        score += 20
+    if "halo" in model_id.lower():
+        score += 10
+    if "lite" in model_id.lower():
+        score += 4
+    if model.get("suggested") is True:
+        score += 1
+    return (-score, model_id)
+
+
+def summarize_omni_collections(model_items: list[Any]) -> list[dict[str, Any]]:
+    collections: list[dict[str, Any]] = []
+    for model in model_items:
+        if not isinstance(model, dict) or not is_omni_collection(model):
+            continue
+        model_id = str(model.get("id", "")).strip()
+        match = OMNI_NAME_RE.match(model_id)
+        components = model.get("components")
+        collections.append(
+            {
+                "id": model_id,
+                "downloaded": model.get("downloaded") is True,
+                "suggested": model.get("suggested") is True,
+                "official_name_pattern": bool(match),
+                "size": match.group("size") if match else None,
+                "class": match.group("class") if match else None,
+                "components": components if isinstance(components, list) else [],
+            }
+        )
+    collections.sort(key=omni_collection_score)
+    return collections
+
+
 def now_iso_utc() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -118,6 +185,34 @@ def get_models(base_url: str, headers: dict[str, str], timeout: float, retries: 
     raise RuntimeError("Failed to query /v1/models")
 
 
+def get_health(base_url: str, headers: dict[str, str], timeout: float, retries: int) -> tuple[dict[str, Any] | None, list[str]]:
+    warnings: list[str] = []
+    url = f"{base_url.rstrip('/')}/v1/health"
+
+    for attempt in range(retries + 1):
+        try:
+            status, body = do_request(url=url, method="GET", headers=headers, timeout=timeout)
+            if status >= 500 and attempt < retries:
+                time.sleep(0.4 * (2**attempt))
+                continue
+            if status != 200:
+                warnings.append(f"/v1/health returned HTTP {status}")
+                return None, warnings
+            payload = json.loads(body or "{}")
+            if isinstance(payload, dict):
+                return payload, warnings
+            warnings.append("/v1/health did not return a JSON object")
+            return None, warnings
+        except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            if attempt < retries:
+                time.sleep(0.4 * (2**attempt))
+                continue
+            warnings.append(f"Failed to query /v1/health: {exc}")
+            return None, warnings
+
+    return None, warnings
+
+
 def probe_endpoint(
     base_url: str,
     path: str,
@@ -161,6 +256,13 @@ def main() -> int:
         timeout=args.timeout,
         retries=args.retries,
     )
+    health, health_warnings = get_health(
+        base_url=base_url,
+        headers=headers,
+        timeout=args.timeout,
+        retries=args.retries,
+    )
+    warnings.extend(health_warnings)
 
     model_items = models_payload.get("data")
     if not isinstance(model_items, list):
@@ -174,6 +276,11 @@ def main() -> int:
         labels = model.get("labels")
         if isinstance(labels, list):
             labels_norm.update(normalize_label(v) for v in labels)
+
+    omni_collections = summarize_omni_collections(model_items)
+    selected_omni_collection = omni_collections[0] if omni_collections else None
+    server_version = health.get("version") if isinstance(health, dict) else None
+    collection_chat_version_ready = version_at_least(server_version, MIN_COLLECTION_CHAT_VERSION)
 
     has_image = any(v in labels_norm for v in ("image", "image-generation", "generation"))
     has_edit = any(v in labels_norm for v in ("edit", "image-edit", "editing"))
@@ -208,6 +315,7 @@ def main() -> int:
         and endpoint_results["images_edits"]["available"]
         and endpoint_results["audio_speech"]["available"]
         and endpoint_results["audio_transcriptions"]["available"]
+        and (not omni_collections or collection_chat_version_ready)
         and has_image
         and has_edit
         and has_tts
@@ -222,10 +330,16 @@ def main() -> int:
         fallback_hints.append("TTS unavailable: keep narration text and skip audio/video merge")
     if not has_stt or not endpoint_results["audio_transcriptions"]["available"]:
         fallback_hints.append("Transcription unavailable: skip STT validation")
+    if omni_collections and not collection_chat_version_ready:
+        fallback_hints.append("Omni collection chat unavailable: upgrade Lemonade to 10.7.0+ or use component endpoint orchestration")
 
     result = {
         "base_url": base_url,
         "discovered_at_utc": now_iso_utc(),
+        "health": health,
+        "server_version": server_version,
+        "minimum_collection_chat_version": ".".join(str(v) for v in MIN_COLLECTION_CHAT_VERSION),
+        "collection_chat_version_ready": collection_chat_version_ready,
         "endpoints": {k: v["available"] for k, v in endpoint_results.items()},
         "endpoint_http_status": {k: v["http_status"] for k, v in endpoint_results.items()},
         "labels": {
@@ -235,6 +349,8 @@ def main() -> int:
             "audio_or_transcription": has_stt,
             "vision_or_tool_calling": has_vision_or_tool,
         },
+        "omni_collections": omni_collections,
+        "selected_omni_collection": selected_omni_collection,
         "model_count": len(model_items),
         "models": model_items,
         "warnings": warnings,

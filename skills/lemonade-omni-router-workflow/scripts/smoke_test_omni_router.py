@@ -8,13 +8,16 @@ chat/image/tts/transcription when matching models are discoverable.
 from __future__ import annotations
 
 import argparse
+import base64
 import io
 import json
 import os
+import re
 import sys
 import time
 import wave
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib import error, request
 
 
@@ -52,6 +55,26 @@ def parse_args() -> argparse.Namespace:
         help="Output report JSON path",
     )
     parser.add_argument(
+        "--omni-model",
+        default=os.environ.get("LEMONADE_OMNI_MODEL", ""),
+        help="Preferred Omni collection model. Defaults to the best downloaded collection matching LMX-Omni-<xB>-<class>.",
+    )
+    parser.add_argument(
+        "--no-load-first",
+        action="store_true",
+        help="Skip POST /v1/load before live probes.",
+    )
+    parser.add_argument(
+        "--include-server-tools",
+        action="store_true",
+        help="Also test server-side Omni image generation and TTS through the collection chat model.",
+    )
+    parser.add_argument(
+        "--artifacts-dir",
+        default="",
+        help="Optional directory for generated image/audio artifacts from smoke tests.",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Exit non-zero if any runnable test fails",
@@ -61,6 +84,67 @@ def parse_args() -> argparse.Namespace:
 
 def normalize_label(v: object) -> str:
     return str(v).strip().lower().replace("_", "-")
+
+
+OMNI_NAME_RE = re.compile(r"^LMX-Omni-(?P<size>[0-9]+(?:\.[0-9]+)?B)-(?P<class>[A-Za-z0-9-]+)(?:-.+)?$")
+MIN_COLLECTION_CHAT_VERSION = (10, 7, 0)
+IMAGE_DATA_RE = re.compile(r"data:image/[^;]+;base64,([A-Za-z0-9+/=]+)")
+AUDIO_DATA_RE = re.compile(r"data:audio/[^;]+;base64,([A-Za-z0-9+/=]+)")
+
+
+def parse_version(version: object) -> tuple[int, int, int] | None:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", str(version))
+    if not match:
+        return None
+    return tuple(int(match.group(i)) for i in range(1, 4))
+
+
+def version_at_least(version: object, minimum: tuple[int, int, int]) -> bool:
+    parsed = parse_version(version)
+    return parsed is not None and parsed >= minimum
+
+
+def is_omni_collection(model: dict) -> bool:
+    return model.get("recipe") == "collection.omni" and (
+        bool(OMNI_NAME_RE.match(str(model.get("id", "")).strip())) or bool(model.get("components"))
+    )
+
+
+def omni_score(model: dict) -> tuple[int, str]:
+    mid = str(model.get("id", "")).strip()
+    labels = model.get("labels")
+    normalized_labels = {normalize_label(v) for v in labels} if isinstance(labels, list) else set()
+    score = 0
+    if model.get("downloaded") is True:
+        score += 100
+    if "custom" in normalized_labels or "custom" in mid.lower():
+        score += 50
+    if OMNI_NAME_RE.match(mid):
+        score += 20
+    if "halo" in mid.lower():
+        score += 10
+    if "lite" in mid.lower():
+        score += 4
+    if model.get("suggested") is True:
+        score += 1
+    return (-score, mid)
+
+
+def pick_omni_collection(models: list[dict], preferred: str = "") -> dict | None:
+    if preferred.strip():
+        for model in models:
+            if str(model.get("id", "")).strip() == preferred.strip() and is_omni_collection(model):
+                return model
+    candidates = [model for model in models if is_omni_collection(model)]
+    candidates.sort(key=omni_score)
+    return candidates[0] if candidates else None
+
+
+def model_by_id(models: list[dict], model_id: str) -> dict | None:
+    for model in models:
+        if str(model.get("id", "")).strip() == model_id:
+            return model
+    return None
 
 
 def headers_json(api_key: str) -> dict[str, str]:
@@ -126,6 +210,37 @@ def request_json(
     return 0, None, "request failed"
 
 
+def get_health(base_url: str, api_key: str, timeout: float, retries: int) -> dict | None:
+    status, obj, _ = request_json(
+        f"{base_url}/v1/health",
+        "GET",
+        headers_auth(api_key),
+        timeout,
+        None,
+        retries,
+    )
+    if status == 200 and isinstance(obj, dict):
+        return obj
+    return None
+
+
+def post_load_model(base_url: str, api_key: str, timeout: float, retries: int, model_name: str) -> dict[str, object]:
+    status, obj, text = request_json(
+        f"{base_url}/v1/load",
+        "POST",
+        headers_json(api_key),
+        timeout,
+        {"model_name": model_name},
+        retries,
+    )
+    return {
+        "model": model_name,
+        "passed": status == 200 and isinstance(obj, dict) and obj.get("status") == "success",
+        "http_status": status,
+        "response_preview": text[:400],
+    }
+
+
 def get_models(base_url: str, api_key: str, timeout: float, retries: int) -> list[dict]:
     url = f"{base_url.rstrip('/')}/v1/models?show_all=true"
     status, obj, text = request_json(url, "GET", headers_auth(api_key), timeout, None, retries)
@@ -165,6 +280,24 @@ def pick_model(models: list[dict], required_any: tuple[str, ...], preferred_any:
     return candidates[0][1]
 
 
+def pick_component_model(
+    models: list[dict],
+    collection: dict | None,
+    required_any: tuple[str, ...],
+    preferred_any: tuple[str, ...] = (),
+) -> str | None:
+    req = set(required_any)
+    components = collection.get("components") if isinstance(collection, dict) else []
+    if isinstance(components, list):
+        for component_id in components:
+            component = model_by_id(models, str(component_id))
+            labels = component.get("labels") if isinstance(component, dict) else []
+            normalized = {normalize_label(v) for v in labels} if isinstance(labels, list) else set()
+            if normalized.intersection(req):
+                return str(component_id)
+    return pick_model(models, required_any, preferred_any)
+
+
 def make_wav_bytes() -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -175,6 +308,42 @@ def make_wav_bytes() -> bytes:
         silence = b"\x00\x00" * frame_count
         w.writeframes(silence)
     return buf.getvalue()
+
+
+def make_png_bytes() -> bytes:
+    return base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAGklEQVR4nGP8z0A+YKJA76jmUc2jmkc1U0EzACKcAhGdH7MdAAAAAElFTkSuQmCC"
+    )
+
+
+def first_chat_content(obj: dict | None) -> str:
+    if not isinstance(obj, dict):
+        return ""
+    choices = obj.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
+
+
+def save_first_data_uri(content: str, regex: re.Pattern[str], out_path: Path | None) -> tuple[bool, int]:
+    match = regex.search(content)
+    if not match:
+        return False, 0
+    try:
+        data = base64.b64decode(match.group(1), validate=True)
+    except ValueError:
+        return False, 0
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(data)
+    return len(data) > 100, len(data)
 
 
 def make_multipart(fields: dict[str, str], file_field: str, filename: str, content_type: str, file_bytes: bytes) -> tuple[bytes, str]:
@@ -199,16 +368,196 @@ def make_multipart(fields: dict[str, str], file_field: str, filename: str, conte
 def run() -> int:
     args = parse_args()
     base_url = args.base_url.rstrip("/")
+    artifacts_dir = Path(args.artifacts_dir) if args.artifacts_dir.strip() else None
+    health = get_health(base_url, args.api_key, args.timeout, args.retries)
     models = get_models(base_url, args.api_key, args.timeout, args.retries)
+    omni_collection = pick_omni_collection(models, args.omni_model)
+    omni_model_id = str(omni_collection.get("id", "")) if omni_collection else None
 
     selected = {
-        "chat": pick_model(models, ("tool-calling", "function-calling", "vision", "reasoning"), ("tool-calling", "vision")),
-        "image_generation": pick_model(models, ("image", "image-generation", "generation"), ("image",)),
-        "tts": pick_model(models, ("tts", "speech", "text-to-speech"), ("tts", "speech")),
-        "transcription": pick_model(models, ("transcription", "stt", "speech-to-text", "audio"), ("transcription", "stt")),
+        "omni_collection": omni_model_id,
+        "chat": pick_component_model(models, omni_collection, ("tool-calling", "function-calling", "vision", "reasoning"), ("tool-calling", "vision")),
+        "image_generation": pick_component_model(models, omni_collection, ("image", "image-generation", "generation"), ("image",)),
+        "image_edit": pick_component_model(models, omni_collection, ("edit", "image-edit", "editing"), ("edit",)),
+        "tts": pick_component_model(models, omni_collection, ("tts", "speech", "text-to-speech"), ("tts", "speech")),
+        "transcription": pick_component_model(models, omni_collection, ("transcription", "stt", "speech-to-text", "audio"), ("transcription", "stt")),
     }
 
     tests: dict[str, dict[str, object]] = {}
+    server_version = health.get("version") if isinstance(health, dict) else None
+    tests["lemonade_version_minimum"] = {
+        "runnable": True,
+        "passed": version_at_least(server_version, MIN_COLLECTION_CHAT_VERSION),
+        "http_status": 200 if health else None,
+        "model": None,
+        "version": server_version,
+        "minimum_version": ".".join(str(v) for v in MIN_COLLECTION_CHAT_VERSION),
+        "note": "Server-side Omni collection chat requires Lemonade 10.7.0 or newer.",
+    }
+
+    if selected["omni_collection"]:
+        load_result = None
+        if not args.no_load_first:
+            load_result = post_load_model(
+                base_url=base_url,
+                api_key=args.api_key,
+                timeout=args.timeout,
+                retries=args.retries,
+                model_name=str(selected["omni_collection"]),
+            )
+            tests["omni_collection_load_live"] = {
+                "runnable": True,
+                "passed": load_result["passed"],
+                "http_status": load_result["http_status"],
+                "model": selected["omni_collection"],
+                "note": "Expected 200 success from POST /v1/load. Loading a collection should load each component.",
+                "response_preview": load_result["response_preview"],
+            }
+        status, obj, text = request_json(
+            f"{base_url}/v1/chat/completions",
+            "POST",
+            headers_json(args.api_key),
+            args.timeout,
+            {
+                "model": selected["omni_collection"],
+                "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+                "max_tokens": 16,
+                "temperature": 0,
+                "stream": False,
+            },
+            args.retries,
+        )
+        passed = status == 200 and isinstance(obj, dict) and isinstance(obj.get("choices"), list)
+        tests["omni_collection_chat_live"] = {
+            "runnable": True,
+            "passed": passed,
+            "http_status": status,
+            "model": selected["omni_collection"],
+            "note": "Expected 200 from server-side Omni collection orchestration. If this fails but component tests pass, use component endpoint fallback.",
+            "response_preview": text[:400],
+        }
+        if args.include_server_tools:
+            status, obj, text = request_json(
+                f"{base_url}/v1/chat/completions",
+                "POST",
+                headers_json(args.api_key),
+                args.timeout,
+                {
+                    "model": selected["omni_collection"],
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Generate a simple image of a red square on a white background. Return the generated image.",
+                        }
+                    ],
+                    "temperature": 0,
+                    "stream": False,
+                },
+                args.retries,
+            )
+            content = first_chat_content(obj)
+            image_ok, image_bytes = save_first_data_uri(
+                content,
+                IMAGE_DATA_RE,
+                artifacts_dir / "omni_collection_generated_image.bin" if artifacts_dir else None,
+            )
+            tests["omni_collection_image_generation_live"] = {
+                "runnable": True,
+                "passed": status == 200 and image_ok,
+                "http_status": status,
+                "model": selected["omni_collection"],
+                "bytes": image_bytes,
+                "note": "Expected assistant content with an embedded data:image URI from server-side generate_image.",
+                "response_preview": (content or text)[:400],
+            }
+
+            source_image_url = "data:image/png;base64," + base64.b64encode(make_png_bytes()).decode("ascii")
+            status, obj, text = request_json(
+                f"{base_url}/v1/chat/completions",
+                "POST",
+                headers_json(args.api_key),
+                args.timeout,
+                {
+                    "model": selected["omni_collection"],
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Edit the attached image so the red square becomes a blue circle/sphere "
+                                "on the same white background. Return the edited image.\n\n"
+                                f"![source]({source_image_url})"
+                            ),
+                        }
+                    ],
+                    "temperature": 0,
+                    "stream": False,
+                },
+                args.retries,
+            )
+            content = first_chat_content(obj)
+            edit_ok, edit_bytes = save_first_data_uri(
+                content,
+                IMAGE_DATA_RE,
+                artifacts_dir / "omni_collection_edited_image.bin" if artifacts_dir else None,
+            )
+            tests["omni_collection_image_edit_live"] = {
+                "runnable": True,
+                "passed": status == 200 and edit_ok,
+                "http_status": status,
+                "model": selected["omni_collection"],
+                "bytes": edit_bytes,
+                "note": "Expected assistant content with an embedded data:image URI from server-side edit_image.",
+                "response_preview": (content or text)[:400],
+            }
+
+            status, obj, text = request_json(
+                f"{base_url}/v1/chat/completions",
+                "POST",
+                headers_json(args.api_key),
+                args.timeout,
+                {
+                    "model": selected["omni_collection"],
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Say this out loud using text-to-speech: Lemonade omni smoke test.",
+                        }
+                    ],
+                    "temperature": 0,
+                    "stream": False,
+                },
+                args.retries,
+            )
+            content = first_chat_content(obj)
+            audio_ok, audio_bytes = save_first_data_uri(
+                content,
+                AUDIO_DATA_RE,
+                artifacts_dir / "omni_collection_speech.bin" if artifacts_dir else None,
+            )
+            tests["omni_collection_text_to_speech_live"] = {
+                "runnable": True,
+                "passed": status == 200 and audio_ok,
+                "http_status": status,
+                "model": selected["omni_collection"],
+                "bytes": audio_bytes,
+                "note": "Expected assistant content with an embedded data:audio URI from server-side text_to_speech.",
+                "response_preview": (content or text)[:400],
+            }
+    else:
+        tests["omni_collection_load_live"] = {
+            "runnable": False,
+            "passed": False,
+            "http_status": None,
+            "model": None,
+            "note": "No Omni collection with recipe collection.omni found",
+        }
+        tests["omni_collection_chat_live"] = {
+            "runnable": False,
+            "passed": False,
+            "http_status": None,
+            "model": None,
+            "note": "No Omni collection with recipe collection.omni found",
+        }
 
     if selected["chat"]:
         status, obj, text = request_json(
@@ -272,6 +621,53 @@ def run() -> int:
             "http_status": None,
             "model": None,
             "note": "No suitable image generation model label found",
+        }
+
+    if selected["image_edit"]:
+        mp_body, boundary = make_multipart(
+            fields={
+                "model": selected["image_edit"],
+                "prompt": "Turn the square green while keeping a plain white background",
+                "size": "256x256",
+                "response_format": "b64_json",
+            },
+            file_field="image",
+            filename="smoke.png",
+            content_type="image/png",
+            file_bytes=make_png_bytes(),
+        )
+        headers = headers_auth(args.api_key)
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        status, body, _ = http_request(
+            f"{base_url}/v1/images/edits",
+            "POST",
+            headers,
+            args.timeout,
+            mp_body,
+        )
+        text = body.decode("utf-8", errors="replace")
+        obj = None
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            obj = None
+        data_ok = isinstance(obj, dict) and isinstance(obj.get("data"), list)
+        passed = status == 200 and data_ok
+        tests["images_edits_live"] = {
+            "runnable": True,
+            "passed": passed,
+            "http_status": status,
+            "model": selected["image_edit"],
+            "note": "Expected 200 with data[]",
+            "response_preview": text[:200],
+        }
+    else:
+        tests["images_edits_live"] = {
+            "runnable": False,
+            "passed": False,
+            "http_status": None,
+            "model": None,
+            "note": "No suitable image edit model label found",
         }
 
     if selected["tts"]:
@@ -357,6 +753,8 @@ def run() -> int:
     report = {
         "base_url": base_url,
         "tested_at_utc": now_iso_utc(),
+        "health": health,
+        "omni_collection": omni_collection,
         "selected_models": selected,
         "tests": tests,
         "summary": {
