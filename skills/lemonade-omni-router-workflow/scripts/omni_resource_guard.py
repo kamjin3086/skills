@@ -52,6 +52,11 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Return a non-zero exit code when /v1/load is not allowed; use --no-strict-load-gate for report-only mode",
     )
+    parser.add_argument(
+        "--print-json",
+        action="store_true",
+        help="Print the full plan JSON to stdout. By default stdout is a compact summary; full details are written to --out-file.",
+    )
     parser.add_argument("--restore-file", default="", help="Write paused model restore plan here")
     return parser.parse_args()
 
@@ -254,6 +259,32 @@ def wait_until_unloaded(base_url: str, api_key: str, model: str, timeout: float 
     return {"ok": False, "verified": False, "remaining_loaded": sorted(names), "samples": samples[-3:]}
 
 
+def print_summary(plan: dict[str, Any], out_file: Path, restore_file: str) -> None:
+    print(f"[report] resource_plan={out_file}")
+    if restore_file:
+        print(f"restore_plan={restore_file}")
+    print(
+        f"task={plan.get('task')} load_allowed={plan.get('load_allowed')} "
+        f"collection={plan.get('selected_collection')}"
+    )
+    blocking = plan.get("blocking_reasons") or []
+    pressure = plan.get("pressure") or []
+    print("blocking_reasons=" + (",".join(blocking) if blocking else "none"))
+    print("pressure=" + (",".join(pressure) if pressure else "none"))
+    pause = [m.get("model_name") for m in plan.get("pause_candidates", []) if isinstance(m, dict)]
+    protected = plan.get("protected_models_loaded_initially") or []
+    print("pause_candidates=" + (",".join(pause) if pause else "none"))
+    print("protected_loaded=" + (",".join(protected) if protected else "none"))
+    missing = plan.get("required_components_missing") or []
+    if missing:
+        print("required_missing=" + ",".join(missing))
+    if plan.get("confirmation_prompt"):
+        print("needs_user_confirmation=true field=confirmation_prompt")
+    failed = plan.get("pause_failed_models") or plan.get("agent_primary_protection_failed") or []
+    if failed:
+        print("failed=" + ",".join(str(v) for v in failed))
+
+
 def main() -> int:
     args = parse_args()
     base = args.base_url.rstrip("/")
@@ -330,6 +361,7 @@ def main() -> int:
         "actions": [],
         "restore_plan": {
             "models_to_reload": [m["model_name"] for m in pause_candidates],
+            "models_to_unload_before_restore": [m for m in [collection.get("id") if collection else None, *required] if m],
             "preferred_restore": "llama-swap" if llama_swap else "lemonade load",
         },
     }
@@ -389,7 +421,10 @@ def main() -> int:
     out.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.restore_file:
         Path(args.restore_file).write_text(json.dumps(plan["restore_plan"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(plan, ensure_ascii=False, indent=2))
+    if args.print_json:
+        print(json.dumps(plan, ensure_ascii=False, indent=2))
+    else:
+        print_summary(plan, out, args.restore_file)
     if not plan["ok"]:
         return 1
     if args.strict_load_gate and not plan["load_allowed"]:

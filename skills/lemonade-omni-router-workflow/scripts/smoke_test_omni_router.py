@@ -79,6 +79,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exit non-zero if any runnable test fails",
     )
+    parser.add_argument(
+        "--print-json",
+        action="store_true",
+        help="Print the full smoke-test report to stdout. By default stdout is a compact summary; full details are written to --out-file.",
+    )
     return parser.parse_args()
 
 
@@ -769,8 +774,17 @@ def run() -> int:
         json.dump(report, f, ensure_ascii=False, indent=2)
         f.write("\n")
 
-    print(f"[ok] Smoke test report written to: {args.out_file}")
-    print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
+    if args.print_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        summary = report["summary"]
+        failed = summary.get("failed_tests") or []
+        print(f"[report] smoke_report={args.out_file}")
+        print(
+            f"all_runnable_passed={summary.get('all_runnable_passed')} "
+            f"runnable={summary.get('runnable_test_count')} failed={summary.get('failed_test_count')}"
+        )
+        print("failed_tests=" + (",".join(failed) if failed else "none"))
 
     if args.strict and failures:
         return 4

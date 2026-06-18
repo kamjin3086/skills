@@ -59,6 +59,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exit non-zero when omni_router_ready=false",
     )
+    parser.add_argument(
+        "--print-json",
+        action="store_true",
+        help="Print the full JSON report to stdout. By default stdout is a compact summary; full details are written to --out-file.",
+    )
     return parser.parse_args()
 
 
@@ -243,6 +248,27 @@ def probe_endpoint(
     return {"available": False, "http_status": None}
 
 
+def print_summary(result: dict[str, Any], out_file: str) -> None:
+    selected = result.get("selected_omni_collection") or {}
+    labels = result.get("labels") or {}
+    endpoints = result.get("endpoints") or {}
+    warnings = result.get("warnings") or []
+    fallback_hints = result.get("fallback_hints") or []
+    print(f"[report] capability_report={out_file}")
+    print(f"ready={result.get('omni_router_ready')} version={result.get('server_version')} collection={selected.get('id')}")
+    print(
+        "labels="
+        + ",".join(k for k, v in labels.items() if v)
+        + f" model_count={result.get('model_count')}"
+    )
+    unavailable = [k for k, v in endpoints.items() if not v]
+    print("unavailable_endpoints=" + (",".join(unavailable) if unavailable else "none"))
+    if warnings:
+        print("warnings=" + " | ".join(str(v)[:160] for v in warnings[:3]))
+    if fallback_hints:
+        print("fallback_hints=" + " | ".join(str(v)[:160] for v in fallback_hints[:3]))
+
+
 def main() -> int:
     args = parse_args()
     out_file = args.out_file_flag or args.out_file or "./omni_capabilities.json"
@@ -362,8 +388,10 @@ def main() -> int:
         json.dump(result, f, ensure_ascii=False, indent=2)
         f.write("\n")
 
-    print(f"[ok] Capability report written to: {out_file}")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.print_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print_summary(result, out_file)
 
     if args.strict_ready and not omni_router_ready:
         return 3

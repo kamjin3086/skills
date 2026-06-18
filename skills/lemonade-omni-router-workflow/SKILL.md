@@ -21,8 +21,35 @@ Use this skill to integrate Lemonade OmniRouter into any agent without hardcodin
    `python scripts/smoke_test_omni_router.py --strict --include-server-tools --out-file ./omni_smoke_test.json --artifacts-dir ./omni_smoke_artifacts`
 7. Prefer the selected downloaded custom Omni collection for generation, editing, and speech.
 8. Use component endpoints only for transcription, explicit image analysis, or fallback after bounded retries.
-9. Restore paused side models when the Omni task is complete:
+9. After image generation/editing, collect visible artifacts:
+   `python scripts/omni_collect_artifacts.py --search-dir ./omni_smoke_artifacts --output-dir ./omni_outputs/images --out-file ./omni_artifacts_report.json`
+10. Restore paused side models when the Omni task is complete. This unloads Omni/image components before reloading side models:
    `python scripts/omni_restore_models.py --restore-file ./omni_restore_plan.json --out-file ./omni_restore_report.json`
+
+## Token-Efficient Operation
+
+Keep command output precise. Scripts write full JSON to `--out-file` and print compact summaries by default. Do not `cat` full reports unless debugging requires the whole payload. Use `--print-json` only when full stdout JSON is required.
+
+Prefer targeted field reads:
+
+```bash
+python3 - <<'PY'
+import json
+data=json.load(open("omni_resource_plan.json", encoding="utf-8"))
+print(data["load_allowed"], data.get("blocking_reasons", []))
+PY
+```
+
+For Lemonade health/log checks, read only the needed slice:
+
+```bash
+python3 - <<'PY'
+import json, urllib.request
+data=json.load(urllib.request.urlopen("http://127.0.0.1:13305/v1/health", timeout=8))
+print(data.get("version"), data.get("model_loaded"))
+PY
+lemonade logs 2>/dev/null | tail -n 80
+```
 
 ## Scope Boundary
 
@@ -65,6 +92,7 @@ Do not use this skill for single-modality, one-off tasks that do not require age
 - Discover capabilities dynamically at runtime.
 - Protect the agent's active model before loading large Omni components.
 - When memory/VRAM is tight, ask before temporarily pausing nonessential side models; restore them after the task.
+- Before restoring paused side models, unload Omni/image components loaded for the task so the restored model does not collide with image-model VRAM.
 - Load only the Omni components required by the task when full collection load would threaten the active agent model.
 - Avoid hardcoding model names where possible.
 - Keep intermediate artifacts on disk for replay and debugging.
@@ -160,7 +188,8 @@ Keep at runtime:
 4. Produce a scene-level summary and a final narration script.
 5. Call TTS to generate narration audio.
 6. Build slideshow-style video with ffmpeg.
-7. Emit a run report with:
+7. Collect generated images into a workspace-visible output directory and display them to the user.
+8. Emit a run report with:
    - files generated
    - per-step durations
    - retries and failures
@@ -257,7 +286,31 @@ After task completion, restore side models:
 python scripts/omni_restore_models.py --restore-file ./omni_restore_plan.json --out-file ./omni_restore_report.json
 ```
 
+Restore behavior:
+- The restore plan includes `models_to_unload_before_restore` for the selected Omni collection and task-required components.
+- `omni_restore_models.py` unloads those models before reloading paused side models. This is mandatory for image generation/editing because leaving the image model resident can exhaust VRAM when the side model comes back.
+- Side-model restore defaults to llama-swap when detected; otherwise it falls back to Lemonade API. Use `--prefer llama-swap` explicitly when the deployment depends on llama-swap routing.
+- If any unload-before-restore action fails, the script skips side-model restore and reports the failed unloads instead of risking VRAM pressure.
+
 If restore fails, report the failed model names and the exact method attempted. Do not hide restore failures.
+
+## Generated Media Handoff
+
+Generated or edited images must be user-visible, not left in opaque Lemonade/cache folders.
+
+After every image task:
+1. Locate generated image files from the endpoint response, smoke artifact directory, or Lemonade output path.
+2. Copy or move them into the workspace, usually `./omni_outputs/images`.
+3. Validate each file exists and has non-zero size.
+4. Show/send the image to the user with a Markdown image link using an absolute path.
+
+Use:
+
+```bash
+python scripts/omni_collect_artifacts.py --input /path/to/generated.png --output-dir ./omni_outputs/images --out-file ./omni_artifacts_report.json
+```
+
+The script prints Markdown image links like `![generated](/abs/path.png)`. Include those links in the final response so the user can see the result inside Codex.
 
 ## Reliability Rules
 
@@ -266,6 +319,7 @@ If restore fails, report the failed model names and the exact method attempted. 
 - Do not let Lemonade automatic eviction decide which model to unload; explicitly pause verified side models first.
 - Never chain `/v1/load` after resource guard by checking only shell success. The canonical signal is `load_allowed=true`; default strict mode is an additional fail-fast guard that makes unsafe plans return a non-zero exit.
 - When pausing side models, always persist `omni_restore_plan.json` before unloading anything.
+- Before restoring paused side models, unload task-loaded Omni/image components first; never rely on llama-swap or Lemonade to make enough VRAM implicitly.
 - If a request is quiet for more than 30-60 seconds on first use, check `GET /v1/health` and Lemonade logs immediately instead of waiting until the full HTTP timeout. If logs show backend install/upgrade/conversion/cache preparation, keep waiting; otherwise record the log excerpt and retry or fallback.
 - Persist every intermediate file before moving to next stage.
 - Validate output existence and file size at each stage.
@@ -323,12 +377,14 @@ Always report which fallback path was selected and why.
 - Keep all paths explicit and sanitized.
 - Reject path traversal in user-provided filenames.
 - Keep generated media in a dedicated output root.
+- Copy or move final generated images into the current workspace before reporting success.
 
 ## Minimal Deliverables Per Run
 
 - `run_manifest.json`
 - `analysis/*.json`
 - `images_fixed/*`
+- `omni_outputs/images/*` for generated/edited images that should be shown to the user
 - `audio/narration.wav` (or mp3)
 - `video/summary.mp4` (if ffmpeg stage enabled)
 - `run_report.md`
@@ -356,6 +412,8 @@ python scripts/discover_omni_router_capabilities.py --strict-ready --out-file ./
 python scripts/smoke_test_omni_router.py --strict --include-server-tools --out-file ./omni_smoke_test.json --artifacts-dir ./omni_smoke_artifacts
 ```
 
+These commands print compact summaries. Read `omni_capabilities.json` or `omni_smoke_test.json` with targeted field extraction instead of printing the whole file.
+
 The smoke test defaults to loading the selected Omni collection before probing. Use `--omni-model <name>` to force a specific collection, `--include-server-tools` to verify collection-name image/TTS orchestration, or `--no-load-first` only when testing an already-loaded server state.
 
 ## Agent Consumption Contract
@@ -368,7 +426,8 @@ When another agent loads this skill, treat the following as mandatory preflight:
 5. Execute smoke test in strict mode only after resource guard has passed or verified side-model pausing produced `load_allowed=true`.
 6. If collection load succeeds but collection chat fails while component tests pass, continue with client-side component orchestration and include the collection error in the run report.
 7. If required component checks fail, produce a fallback plan and stop short of full production run.
-8. Always restore paused side models after the Omni task, and report restore failures.
+8. After image tasks, collect generated images into the workspace and include absolute Markdown image links in the user-facing answer.
+9. Always restore paused side models after unloading task-loaded Omni/image components, and report restore failures.
 
 This contract keeps behavior deterministic across different hosts and model inventories.
 
