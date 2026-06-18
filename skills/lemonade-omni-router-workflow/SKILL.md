@@ -11,10 +11,16 @@ Use this skill to integrate Lemonade OmniRouter into any agent without hardcodin
 
 1. Run capability discovery:
    `python scripts/discover_omni_router_capabilities.py --strict-ready --out-file ./omni_capabilities.json`
-2. Run live validation:
+2. Run resource preflight before loading an Omni collection or components:
+   `python scripts/omni_resource_guard.py --task image --out-file ./omni_resource_plan.json --restore-file ./omni_restore_plan.json`
+3. If `needs_user_confirmation=true`, ask the user before pausing side models. After approval:
+   `python scripts/omni_resource_guard.py --task image --execute-pause --confirmed --out-file ./omni_resource_pause.json --restore-file ./omni_restore_plan.json`
+4. Run live validation:
    `python scripts/smoke_test_omni_router.py --strict --include-server-tools --out-file ./omni_smoke_test.json --artifacts-dir ./omni_smoke_artifacts`
-3. Prefer the selected downloaded custom Omni collection for generation, editing, and speech.
-4. Use component endpoints only for transcription, explicit image analysis, or fallback after bounded retries.
+5. Prefer the selected downloaded custom Omni collection for generation, editing, and speech.
+6. Use component endpoints only for transcription, explicit image analysis, or fallback after bounded retries.
+7. Restore paused side models when the Omni task is complete:
+   `python scripts/omni_restore_models.py --restore-file ./omni_restore_plan.json --out-file ./omni_restore_report.json`
 
 ## Scope Boundary
 
@@ -55,6 +61,9 @@ Do not use this skill for single-modality, one-off tasks that do not require age
 
 - Keep orchestration stateless per run.
 - Discover capabilities dynamically at runtime.
+- Protect the agent's active model before loading large Omni components.
+- When memory/VRAM is tight, ask before temporarily pausing nonessential side models; restore them after the task.
+- Load only the Omni components required by the task when full collection load would threaten the active agent model.
 - Avoid hardcoding model names where possible.
 - Keep intermediate artifacts on disk for replay and debugging.
 - Do not wait blindly on long first-run calls; check Lemonade health/logs after a short quiet period to distinguish active setup from a hung request.
@@ -102,10 +111,12 @@ Before executing any multimodal chain:
    - `POST /v1/images/edits`
    - `POST /v1/audio/speech`
    - `POST /v1/audio/transcriptions`
-6. Load the selected collection with `POST /v1/load {"model_name": "<collection>"}`. If it is not downloaded, decide whether to `POST /v1/pull` only after the user accepts download/startup time.
-7. Live-probe the selected collection through `/v1/chat/completions`.
-8. If collection probing fails but component probes pass, use component endpoint fallback and report the collection error explicitly.
-9. If capabilities are missing, return an explicit fallback plan instead of failing late.
+6. Run resource guard preflight with the intended task (`image`, `edit`, `tts`, `transcribe`, `vision`, or `full`).
+7. Load the selected collection with `POST /v1/load {"model_name": "<collection>"}` only when resource guard says it is safe, or after the user approves pausing side models.
+8. If the task needs only one modality and resources are tight, load only the required collection components instead of the whole collection.
+9. Live-probe the selected collection through `/v1/chat/completions` when collection mode is used.
+10. If collection probing fails but component probes pass, use component endpoint fallback and report the collection error explicitly.
+11. If capabilities are missing, return an explicit fallback plan instead of failing late.
 
 Use the bundled script at `scripts/discover_omni_router_capabilities.py` for capability discovery (canonical implementation).
 
@@ -199,12 +210,51 @@ If a local copy of tool definitions is unavailable, construct equivalent tool sc
    - speech: `tts`
    - transcription: `transcription`, `audio`, or `stt`
    - vision/planner: `vision` and/or `tool-calling`
-6. Load the chosen collection via `/v1/load`; if no collection can be loaded, load required components individually.
-7. Prefer downloaded components. Avoid forcing first-call downloads unless the user explicitly accepts startup/download latency.
+6. Before loading, run resource guard. If it predicts pressure, ask the user whether to pause nonessential side models.
+7. Load the chosen collection via `/v1/load` only if safe. If not safe and the task is single-modality, load required components individually.
+8. Prefer downloaded components. Avoid forcing first-call downloads unless the user explicitly accepts startup/download latency.
+
+## Resource Guard And Side-Model Pause
+
+Problem: loading an Omni collection can evict or crash the model currently running the agent, especially on machines with limited RAM/VRAM. Treat resource guard as mandatory before `/v1/load`.
+
+Use:
+
+```bash
+python scripts/omni_resource_guard.py --task image --out-file ./omni_resource_plan.json --restore-file ./omni_restore_plan.json
+```
+
+Task mapping:
+- `image`: image generation component only, plus collection chat only if resource guard says safe.
+- `edit`: image edit component and source-image route.
+- `tts`: TTS component only.
+- `transcribe`: transcription component only.
+- `vision`: vision/tool-calling component only.
+- `full`: complete collection, only when enough memory exists or user approves pausing side models.
+
+Resource guard behavior:
+- Reads `GET /v1/health.all_models_loaded`.
+- Protects pinned models, the explicitly supplied `--agent-model`, and the most recently used loaded LLM as the likely active agent model.
+- Treats other loaded, non-pinned, non-required models as side-model pause candidates.
+- Checks system memory and GPU VRAM when available. Hardware telemetry is advisory; never pause models without user confirmation.
+- Detects llama-swap via `/running` and prefers llama-swap `/models/unload` for pausing. If llama-swap is unavailable, fallback is `lemonade unload <model>`.
+- Writes a restore plan and requires `--execute-pause --confirmed` before actually unloading.
+
+When `needs_user_confirmation=true`, ask the user with the generated `confirmation_prompt`. Do not call `/v1/load` for the Omni collection until the user approves, or choose a lower-memory component-only route.
+
+After task completion, restore side models:
+
+```bash
+python scripts/omni_restore_models.py --restore-file ./omni_restore_plan.json --out-file ./omni_restore_report.json
+```
+
+If restore fails, report the failed model names and the exact method attempted. Do not hide restore failures.
 
 ## Reliability Rules
 
 - Add bounded retries with exponential backoff for network/5xx failures.
+- Run resource guard before loading the collection. Do not risk the active agent model when a component-only path satisfies the task.
+- When pausing side models, always persist `omni_restore_plan.json` before unloading anything.
 - If a request is quiet for more than 30-60 seconds on first use, check `GET /v1/health` and Lemonade logs immediately instead of waiting until the full HTTP timeout. If logs show backend install/upgrade/conversion/cache preparation, keep waiting; otherwise record the log excerpt and retry or fallback.
 - Persist every intermediate file before moving to next stage.
 - Validate output existence and file size at each stage.
@@ -301,10 +351,13 @@ The smoke test defaults to loading the selected Omni collection before probing. 
 
 When another agent loads this skill, treat the following as mandatory preflight:
 1. Execute discovery in strict mode.
-2. Execute smoke test in strict mode; allow it to call `/v1/load`.
-3. Persist both JSON reports in the working directory.
-4. If collection load succeeds but collection chat fails while component tests pass, continue with client-side component orchestration and include the collection error in the run report.
-5. If required component checks fail, produce a fallback plan and stop short of full production run.
+2. Execute resource guard for the intended task before any `/v1/load`.
+3. If resource guard asks for confirmation, ask the user before pausing side models or loading a large collection.
+4. Persist discovery, resource plan, restore plan, smoke test, and final restore report in the working directory.
+5. Execute smoke test in strict mode only after resource guard has passed or the user has approved side-model pausing.
+6. If collection load succeeds but collection chat fails while component tests pass, continue with client-side component orchestration and include the collection error in the run report.
+7. If required component checks fail, produce a fallback plan and stop short of full production run.
+8. Always restore paused side models after the Omni task, and report restore failures.
 
 This contract keeps behavior deterministic across different hosts and model inventories.
 
