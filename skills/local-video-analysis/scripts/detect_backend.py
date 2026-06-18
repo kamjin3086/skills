@@ -40,14 +40,25 @@ class BackendInfo:
     is_gateway: bool
     models: list[str]
     vision_models: list[str]
+    loaded_models: list[str]
+    recommended_model: str | None
+    recommendation_reason: str | None
 
 
 # Gateway processes that proxy other backends - should be used preferentially
 GATEWAY_HINTS = ("llama-swap", "llamaswap", "llama_swap")
 
 # Keywords indicating vision-capable models
-VISION_HINTS = ("smolvlm", "llava", "vision", "vlm", "minicpm-v", "qwen-vl", "qwen2-vl", "qwen2.5-vl",
-                "gemma", "cogvlm", "moondream", "internvl", "phi-3.5-vision")
+VISION_HINTS = (
+    "smolvlm", "llava", "vision", "vlm", "minicpm-v", "qwen-vl", "qwen2-vl", "qwen2.5-vl",
+    "qwen3vl", "qwen3.5", "qwen3.6", "gemma", "cogvlm", "moondream", "internvl",
+    "phi-3.5-vision", "video",
+)
+
+HIGH_QUALITY_VISION_HINTS = (
+    "qwen3.6-35b", "qwen3.6-27b", "qwen3.5-35b", "gemma-4-e4b",
+    "gemma-4-26b", "gemma-4-31b", "minicpm-v-4.6", "qwen2.5-vl-7b",
+)
 
 # Known backend executables → (family, [default_ports])
 BACKEND_PROCESS_HINTS: dict[str, tuple[str, list[int]]] = {
@@ -85,6 +96,58 @@ def is_gateway(server_header: str, models: list[str]) -> bool:
     return False
 
 
+def model_quality_score(model_name: str, loaded: bool = False) -> tuple[int, str]:
+    """Score local models for video frame understanding.
+
+    Running/loaded models are preferred because the user is likely already paying
+    their memory/startup cost. Quality hints then break ties.
+    """
+    name = model_name.lower()
+    score = 0
+    if loaded:
+        score += 1000
+    for idx, hint in enumerate(HIGH_QUALITY_VISION_HINTS):
+        if hint in name:
+            score += 500 - idx * 10
+            break
+    if "35b" in name:
+        score += 90
+    elif "27b" in name or "26b" in name or "31b" in name:
+        score += 70
+    elif "9b" in name or "7b" in name or "8b" in name:
+        score += 40
+    elif "4b" in name:
+        score += 25
+    if "a3b" in name or "moe" in name:
+        score += 30
+    if "vision" in name or "vl" in name or "video" in name:
+        score += 40
+    if "qwen3.6" in name:
+        score += 80
+    elif "qwen3.5" in name:
+        score += 60
+    if "smol" in name or "tiny" in name or "500m" in name:
+        score -= 30
+    return score, model_name
+
+
+def pick_recommended_model(models: list[str], vision_models: list[str], loaded_models: list[str]) -> tuple[str | None, str | None]:
+    pool = list(dict.fromkeys(loaded_models + vision_models + models))
+    if not pool:
+        return None, None
+    loaded_set = set(loaded_models)
+    ranked = sorted(
+        ((model_quality_score(m, m in loaded_set), m) for m in pool),
+        key=lambda item: (-item[0][0], item[1].lower()),
+    )
+    best = ranked[0][1]
+    if best in loaded_set:
+        return best, "preferred because it is already loaded/running and has the highest local video-vision score"
+    if best in vision_models:
+        return best, "preferred because it is detected as vision-capable and has the highest local quality score"
+    return best, "fallback recommendation from available models; verify it can accept image frames"
+
+
 def classify_backend(server_header: str, port: int) -> tuple[str, str]:
     """Classify backend by server header."""
     h = (server_header or "").lower()
@@ -120,7 +183,8 @@ def detect_ollama(host: str, port: int) -> BackendInfo | None:
                 models.append(name)
                 if any(k in name.lower() for k in VISION_HINTS):
                     vision.append(name)
-        return BackendInfo("ollama", "ollama", port, url, "running", False, models, vision)
+        rec, reason = pick_recommended_model(models, vision, [])
+        return BackendInfo("ollama", "ollama", port, url, "running", False, models, vision, [], rec, reason)
     except Exception:
         return None
 
@@ -130,22 +194,43 @@ def detect_openai_endpoint(host: str, port: int) -> BackendInfo | None:
     if not is_port_open(host, port):
         return None
     try:
-        resp = httpx.get(f"{url}/v1/models", timeout=5.0)
+        models_path = "/v1/models?show_all=true" if port == 13305 else "/v1/models"
+        resp = httpx.get(f"{url}{models_path}", timeout=5.0)
         resp.raise_for_status()
         server_header = resp.headers.get("server", "")
         name, family = classify_backend(server_header, port)
+        if port == 13305:
+            name, family = "lemonade", "llama.cpp-family"
         models = []
         vision = []
         for m in resp.json().get("data", []):
             mid = m.get("id", "")
             if mid:
                 models.append(mid)
-                if any(k in mid.lower() for k in VISION_HINTS):
+                labels = m.get("labels") or []
+                labels_text = " ".join(str(v).lower() for v in labels)
+                combined = f"{mid.lower()} {labels_text}"
+                if any(k in combined for k in VISION_HINTS):
                     vision.append(mid)
-        gateway = is_gateway(server_header, models)
+        loaded_models: list[str] = []
+        try:
+            health = httpx.get(f"{url}/v1/health", timeout=5.0)
+            if health.status_code == 200:
+                for item in health.json().get("all_models_loaded", []):
+                    model_name = item.get("model_name", "")
+                    if model_name:
+                        loaded_models.append(model_name)
+                        if model_name not in models:
+                            models.append(model_name)
+                        if any(k in model_name.lower() for k in VISION_HINTS) and model_name not in vision:
+                            vision.append(model_name)
+        except Exception:
+            pass
+        gateway = False if name == "lemonade" else is_gateway(server_header, models)
         if gateway:
             family = "gateway"
-        return BackendInfo(name, family, port, url, "running", gateway, models, vision)
+        rec, reason = pick_recommended_model(models, vision, loaded_models)
+        return BackendInfo(name, family, port, url, "running", gateway, models, vision, loaded_models, rec, reason)
     except Exception:
         return None
 
@@ -157,7 +242,7 @@ def detect_llamacpp_health(host: str, port: int) -> BackendInfo | None:
     try:
         resp = httpx.get(f"{url}/health", timeout=4.0)
         if resp.status_code == 200:
-            return BackendInfo("llama.cpp", "llama.cpp-family", port, url, "running", False, [], [])
+            return BackendInfo("llama.cpp", "llama.cpp-family", port, url, "running", False, [], [], [], None, None)
     except Exception:
         pass
     return None
@@ -258,7 +343,9 @@ def recommended_models() -> dict:
     return {
         "os": os_name,
         "target_models": [
-            "Gemma-4-E4B-instruct",   # best trade-off per benchmark
+            "Qwen3.6-35B-A3B",        # highest quality when already running
+            "Qwen3.6-27B-MTP",
+            "Gemma-4-E4B-instruct",   # strong local trade-off
             "Qwen2.5-VL-7B-Instruct",
             "MiniCPM-V-4.6",
             "SmolVLM2-500M-Video-Instruct",
@@ -312,8 +399,12 @@ def main():
             gw = " [GATEWAY]" if b.is_gateway else ""
             print(f"  {b.name} [{b.family}]{gw} {b.url}")
             print(f"    models: {b.models[:5]}{'...' if len(b.models) > 5 else ''}")
-            if b.vision_models:
-                print(f"    vision: {b.vision_models}")
+        if b.vision_models:
+            print(f"    vision: {b.vision_models}")
+        if b.loaded_models:
+            print(f"    loaded: {b.loaded_models}")
+        if b.recommended_model:
+            print(f"    recommended: {b.recommended_model} ({b.recommendation_reason})")
         print(f"\nTarget models: {recs['target_models']}")
         print(f"Preferred format: {recs['preferred_format']}")
     
