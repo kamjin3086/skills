@@ -39,10 +39,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task", choices=sorted(TASK_LABELS), default="full")
     parser.add_argument("--omni-model", default=os.environ.get("LEMONADE_OMNI_MODEL", ""))
     parser.add_argument("--agent-model", default=os.environ.get("AGENT_MODEL", ""))
+    parser.add_argument("--protect-model", action="append", default=[], help="Additional model name to never pause; can be repeated")
     parser.add_argument("--out-file", default="./omni_resource_plan.json")
     parser.add_argument("--llama-swap-url", default=os.environ.get("LLAMA_SWAP_URL", ""))
     parser.add_argument("--execute-pause", action="store_true")
     parser.add_argument("--confirmed", action="store_true")
+    parser.add_argument("--allow-load-with-side-models", action="store_true", help="Allow Omni load even when side models remain loaded")
+    parser.add_argument("--allow-load-under-pressure", action="store_true", help="Allow loading missing Omni components even when memory/VRAM pressure is detected")
+    parser.add_argument(
+        "--strict-load-gate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Return a non-zero exit code when /v1/load is not allowed; use --no-strict-load-gate for report-only mode",
+    )
     parser.add_argument("--restore-file", default="", help="Write paused model restore plan here")
     return parser.parse_args()
 
@@ -119,6 +128,19 @@ def get_meminfo() -> dict[str, Any]:
     return result
 
 
+def pressure_reasons(mem: dict[str, Any]) -> list[str]:
+    pressure = []
+    sys_mem = mem.get("system", {})
+    if sys_mem.get("available_ratio") is not None and sys_mem["available_ratio"] < 0.18:
+        pressure.append("low_system_memory")
+    for gpu in mem.get("gpu", []):
+        total = gpu.get("total_bytes") or 0
+        free = gpu.get("free_bytes") or 0
+        if total and free / total < 0.18:
+            pressure.append(f"low_gpu_{gpu.get('index')}_vram")
+    return sorted(set(pressure))
+
+
 def norm_labels(model: dict[str, Any]) -> set[str]:
     labels = model.get("labels")
     values = labels if isinstance(labels, list) else []
@@ -164,9 +186,16 @@ def task_components(collection: dict[str, Any] | None, models_by_id: dict[str, d
     return selected
 
 
-def infer_primary_models(loaded: list[dict[str, Any]], agent_model: str) -> set[str]:
+def infer_primary_models(loaded: list[dict[str, Any]], agent_model: str, health: dict[str, Any], extra: list[str]) -> set[str]:
     protected = {agent_model} if agent_model else set()
-    model_loaded = ""
+    protected.update(v for v in extra if v)
+    for env_name in ("CODEX_MODEL", "OPENAI_MODEL", "MODEL", "AGENT_MODEL"):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            protected.add(value)
+    active_model = str(health.get("model_loaded", "")).strip()
+    if active_model:
+        protected.add(active_model)
     for item in loaded:
         if item.get("pinned"):
             protected.add(str(item.get("model_name", "")))
@@ -175,9 +204,7 @@ def infer_primary_models(loaded: list[dict[str, Any]], agent_model: str) -> set[
         llms = [m for m in loaded if m.get("type") == "llm"]
         llms.sort(key=lambda m: int(m.get("last_use") or 0), reverse=True)
         if llms:
-            model_loaded = str(llms[0].get("model_name", ""))
-    if model_loaded:
-        protected.add(model_loaded)
+            protected.add(str(llms[0].get("model_name", "")))
     return {m for m in protected if m}
 
 
@@ -203,6 +230,30 @@ def unload_via_llama_swap(base: str, model: str) -> dict[str, Any]:
     return {"ok": False, "method": "llama-swap", "reason": "all payload variants failed"}
 
 
+def loaded_model_names(base_url: str, api_key: str) -> set[str]:
+    status, health, _ = http_json(f"{base_url.rstrip('/')}/v1/health", h=headers(api_key, False), timeout=8.0)
+    if status != 200 or not isinstance(health, dict):
+        return set()
+    return {
+        str(item.get("model_name", ""))
+        for item in health.get("all_models_loaded", [])
+        if isinstance(item, dict) and item.get("model_name")
+    }
+
+
+def wait_until_unloaded(base_url: str, api_key: str, model: str, timeout: float = 45.0) -> dict[str, Any]:
+    deadline = time.time() + timeout
+    samples = []
+    while time.time() < deadline:
+        names = loaded_model_names(base_url, api_key)
+        samples.append(sorted(names))
+        if names and model not in names:
+            return {"ok": True, "verified": True, "remaining_loaded": sorted(names)}
+        time.sleep(1.5)
+    names = loaded_model_names(base_url, api_key)
+    return {"ok": False, "verified": False, "remaining_loaded": sorted(names), "samples": samples[-3:]}
+
+
 def main() -> int:
     args = parse_args()
     base = args.base_url.rstrip("/")
@@ -217,7 +268,9 @@ def main() -> int:
     collection = select_collection(models, args.omni_model)
     required = task_components(collection, models_by_id, args.task)
     loaded = [m for m in health.get("all_models_loaded", []) if isinstance(m, dict)]
-    protected = infer_primary_models(loaded, args.agent_model)
+    protected = infer_primary_models(loaded, args.agent_model, health, args.protect_model)
+    loaded_names_initial = {str(m.get("model_name", "")) for m in loaded if m.get("model_name")}
+    protected_loaded_initial = sorted(protected.intersection(loaded_names_initial))
     required_set = set(required)
     pause_candidates = []
     for m in loaded:
@@ -235,27 +288,42 @@ def main() -> int:
             }
         )
     mem = get_meminfo()
-    pressure = []
-    sys_mem = mem.get("system", {})
-    if sys_mem.get("available_ratio") is not None and sys_mem["available_ratio"] < 0.18:
-        pressure.append("low_system_memory")
-    for gpu in mem.get("gpu", []):
-        total = gpu.get("total_bytes") or 0
-        free = gpu.get("free_bytes") or 0
-        if total and free / total < 0.18:
-            pressure.append(f"low_gpu_{gpu.get('index')}_vram")
+    pressure = pressure_reasons(mem)
     llama_swap = find_llama_swap(args.llama_swap_url)
-    needs_confirmation = bool(pause_candidates) and (bool(pressure) or bool(required))
+    required_loaded = sorted(required_set.intersection(loaded_names_initial))
+    required_missing = sorted(required_set.difference(loaded_names_initial))
+    guard_reasons = []
+    if pause_candidates:
+        guard_reasons.append("side_models_loaded")
+    if pressure:
+        guard_reasons.append("memory_or_vram_pressure")
+    if required_missing:
+        guard_reasons.append("required_components_not_loaded")
+    blocking_reasons = []
+    if pause_candidates and not args.allow_load_with_side_models:
+        blocking_reasons.append("side_models_must_be_paused_first")
+    if pressure and required_missing and not args.allow_load_under_pressure:
+        blocking_reasons.append("memory_or_vram_pressure_before_loading_missing_components")
+    needs_confirmation = bool(pause_candidates)
+    load_allowed = not blocking_reasons
     plan = {
         "ok": True,
         "task": args.task,
         "selected_collection": collection.get("id") if collection else None,
         "required_components": required,
+        "required_components_loaded": required_loaded,
+        "required_components_missing": required_missing,
         "loaded_models": [m.get("model_name") for m in loaded],
         "protected_models": sorted(protected),
+        "protected_models_loaded_initially": protected_loaded_initial,
         "pause_candidates": pause_candidates,
         "memory": mem,
-        "pressure": sorted(set(pressure)),
+        "pressure": pressure,
+        "guard_reasons": guard_reasons,
+        "blocking_reasons": blocking_reasons,
+        "load_allowed": load_allowed,
+        "must_pause_before_load": bool(pause_candidates) and not args.allow_load_with_side_models,
+        "must_free_resources_before_load": bool(blocking_reasons),
         "llama_swap": llama_swap,
         "needs_user_confirmation": needs_confirmation and not args.confirmed,
         "confirmation_prompt": "",
@@ -268,12 +336,14 @@ def main() -> int:
     if plan["needs_user_confirmation"]:
         names = ", ".join(m["model_name"] for m in pause_candidates)
         plan["confirmation_prompt"] = (
-            f"Omni task '{args.task}' may need memory/VRAM. I can temporarily stop side model(s): {names}. "
-            "The inferred agent primary/pinned models will be protected. Restore them after the task?"
+            f"To protect the active agent model before Omni task '{args.task}', I need to temporarily stop side model(s): {names}. "
+            "The inferred agent primary/pinned models will be protected. Restore the side models after the task?"
         )
     if args.execute_pause:
         if not args.confirmed:
             plan["actions"].append({"ok": False, "reason": "--execute-pause requires --confirmed"})
+            plan["ok"] = False
+            plan["load_allowed"] = False
         else:
             for item in pause_candidates:
                 name = item["model_name"]
@@ -282,14 +352,49 @@ def main() -> int:
                 else:
                     proc = subprocess.run(["lemonade", "unload", name], capture_output=True, text=True, check=False)
                     action = {"ok": proc.returncode == 0, "method": "lemonade-cli", "returncode": proc.returncode, "stderr": proc.stderr[-400:]}
+                verification = wait_until_unloaded(base, args.api_key, name)
+                action["verification"] = verification
+                action["ok"] = bool(action.get("ok")) and verification.get("ok") is True
                 action["model_name"] = name
                 plan["actions"].append(action)
+            failed = [a["model_name"] for a in plan["actions"] if not a.get("ok")]
+            remaining = loaded_model_names(base, args.api_key)
+            protected_lost = sorted(set(protected_loaded_initial).difference(remaining))
+            post_mem = get_meminfo()
+            post_pressure = pressure_reasons(post_mem)
+            post_blocking_reasons = []
+            if post_pressure and required_missing and not args.allow_load_under_pressure:
+                post_blocking_reasons.append("memory_or_vram_pressure_before_loading_missing_components")
+            plan["post_pause_loaded_models"] = sorted(remaining)
+            plan["post_pause_memory"] = post_mem
+            plan["post_pause_pressure"] = post_pressure
+            plan["protected_models_lost_after_pause"] = protected_lost
+            if failed:
+                plan["load_allowed"] = False
+                plan["ok"] = False
+                plan["pause_failed_models"] = failed
+            elif protected_lost:
+                plan["load_allowed"] = False
+                plan["ok"] = False
+                plan["agent_primary_protection_failed"] = protected_lost
+            elif post_blocking_reasons:
+                plan["blocking_reasons"] = post_blocking_reasons
+                plan["load_allowed"] = False
+                plan["must_free_resources_before_load"] = True
+            else:
+                plan["load_allowed"] = True
+                plan["must_pause_before_load"] = False
+                plan["must_free_resources_before_load"] = False
     out = Path(args.out_file)
     out.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.restore_file:
         Path(args.restore_file).write_text(json.dumps(plan["restore_plan"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(plan, ensure_ascii=False, indent=2))
-    return 0 if plan["ok"] else 1
+    if not plan["ok"]:
+        return 1
+    if args.strict_load_gate and not plan["load_allowed"]:
+        return 3
+    return 0
 
 
 if __name__ == "__main__":
