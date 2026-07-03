@@ -61,6 +61,8 @@ For async backends:
 
 Download routes should set `Content-Disposition` with a safe, informative, unique filename. Include app/workflow name, a prompt or parameter hint when available, and a short job id. Keep preview URLs separate from download URLs so media components can render inline while download buttons save with useful names.
 
+Refresh recovery should be built in. Persist form values and the latest `{ jobId, promptId, status, outputs }` in browser storage. On page load, restore the form and reconnect to the latest job. If the app backend still has the in-memory job, poll `/api/jobs/:jobId`; if not, recover from ComfyUI using `prompt_id` through `/history/{prompt_id}` and `/queue`. This should survive page refreshes; full backend restarts can still recover completed jobs if ComfyUI history is retained.
+
 For single-user or trusted LAN demos, in-memory state is enough. For public or untrusted multi-user use, add authentication, persistence, quotas, and a real queue.
 
 ## Repository Safety

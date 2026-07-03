@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 const API_BASE = "";
+const STORAGE_KEY = "cwa-comfyui-workflow-app.state.v1";
 
 function defaultValue(field) {
   if (field.default !== undefined) return field.default;
@@ -68,6 +69,22 @@ function ResultPreview({ outputs, jobId, values, appName }) {
       <p className="file-note">{first.filename}</p>
     </div>
   );
+}
+
+function loadSavedState() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveState(patch) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...loadSavedState(), ...patch, savedAt: Date.now() }));
+  } catch {
+    // Persistence is a convenience; the app still works if storage is unavailable.
+  }
 }
 
 function FieldControl({ field, value, onChange }) {
@@ -164,13 +181,19 @@ export default function App() {
   const [status, setStatus] = useState({ ok: false, checking: true });
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
+  const [restored, setRestored] = useState(false);
 
   useEffect(() => {
     async function load() {
       const configResponse = await fetch(`${API_BASE}/api/config`);
       const nextConfig = await configResponse.json();
       setConfig(nextConfig);
-      setValues(Object.fromEntries((nextConfig.fields || []).map((field) => [field.name, defaultValue(field)])));
+      const defaults = Object.fromEntries((nextConfig.fields || []).map((field) => [field.name, defaultValue(field)]));
+      const saved = loadSavedState();
+      setValues({ ...defaults, ...(saved.values || {}) });
+      if (saved.job?.jobId || saved.job?.promptId) {
+        setJob(saved.job);
+      }
 
       const statusResponse = await fetch(`${API_BASE}/api/status`);
       setStatus({ ...(await statusResponse.json()), checking: false });
@@ -181,13 +204,49 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!job?.jobId || ["complete", "error"].includes(job.status)) return;
+    if (!job?.jobId || ["complete", "error", "unknown"].includes(job.status)) return;
     const timer = setInterval(async () => {
       const response = await fetch(`${API_BASE}/api/jobs/${job.jobId}`);
-      setJob(await response.json());
+      if (response.ok) {
+        const nextJob = await response.json();
+        setJob(nextJob);
+        saveState({ job: nextJob });
+        return;
+      }
+      if (job.promptId) {
+        const recoveryResponse = await fetch(`${API_BASE}/api/prompts/${job.promptId}`);
+        if (recoveryResponse.ok) {
+          const recoveredJob = await recoveryResponse.json();
+          setJob(recoveredJob);
+          saveState({ job: recoveredJob });
+        }
+      }
     }, 1200);
     return () => clearInterval(timer);
   }, [job]);
+
+  useEffect(() => {
+    if (!job || restored) return;
+    const shouldRecover = job.promptId && !["complete", "error", "unknown"].includes(job.status);
+    if (!shouldRecover) return;
+    setRestored(true);
+    async function recover() {
+      const response = await fetch(`${API_BASE}/api/jobs/${job.jobId}`);
+      if (response.ok) {
+        const nextJob = await response.json();
+        setJob(nextJob);
+        saveState({ job: nextJob });
+        return;
+      }
+      const recoveryResponse = await fetch(`${API_BASE}/api/prompts/${job.promptId}`);
+      if (recoveryResponse.ok) {
+        const recoveredJob = await recoveryResponse.json();
+        setJob(recoveredJob);
+        saveState({ job: recoveredJob });
+      }
+    }
+    recover().catch(() => {});
+  }, [job, restored]);
 
   const busy = job && !["complete", "error"].includes(job.status);
   const progressPercent = Math.round((job?.progress || 0) * 100);
@@ -196,7 +255,11 @@ export default function App() {
   const advancedFields = useMemo(() => (config?.fields || []).filter((field) => field.advanced), [config]);
 
   function updateValue(name, value) {
-    setValues((current) => ({ ...current, [name]: value }));
+    setValues((current) => {
+      const nextValues = { ...current, [name]: value };
+      saveState({ values: nextValues });
+      return nextValues;
+    });
   }
 
   async function generate(event) {
@@ -211,7 +274,9 @@ export default function App() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Generation failed.");
-      setJob({ jobId: data.jobId, status: "queued", progress: 0.05, outputs: [] });
+      const nextJob = { jobId: data.jobId, promptId: data.promptId, status: "queued", progress: 0.05, outputs: [] };
+      setJob(nextJob);
+      saveState({ values, job: nextJob });
     } catch (generateError) {
       setError(generateError.message);
     }

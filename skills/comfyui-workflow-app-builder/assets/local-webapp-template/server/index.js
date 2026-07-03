@@ -154,6 +154,46 @@ async function pollJob(jobId) {
   jobs.set(jobId, job);
 }
 
+async function recoverPrompt(promptId) {
+  const historyResponse = await comfyFetch(`${COMFY_URL}/history/${promptId}`);
+  const history = await historyResponse.json();
+  if (history[promptId]) {
+    return {
+      jobId: `recovered-${promptId}`,
+      promptId,
+      status: "complete",
+      progress: 1,
+      outputs: collectOutputs(history[promptId]),
+      error: null
+    };
+  }
+
+  const queueResponse = await comfyFetch(`${COMFY_URL}/queue`);
+  const queue = await queueResponse.json();
+  const running = Array.isArray(queue.queue_running) && queue.queue_running.some((item) => JSON.stringify(item).includes(promptId));
+  const pending = Array.isArray(queue.queue_pending) && queue.queue_pending.some((item) => JSON.stringify(item).includes(promptId));
+
+  if (running || pending) {
+    return {
+      jobId: `recovered-${promptId}`,
+      promptId,
+      status: running ? "running" : "queued",
+      progress: running ? 0.5 : 0.1,
+      outputs: [],
+      error: null
+    };
+  }
+
+  return {
+    jobId: `recovered-${promptId}`,
+    promptId,
+    status: "unknown",
+    progress: 0,
+    outputs: [],
+    error: "This prompt is no longer in ComfyUI history or queue."
+  };
+}
+
 app.get("/api/config", (_request, response) => {
   const map = readJson(MAP_PATH);
   response.json({
@@ -195,7 +235,7 @@ app.post("/api/generate", async (request, response) => {
       error: null
     });
     pollJob(jobId);
-    response.json({ jobId });
+    response.json({ jobId, promptId: data.prompt_id, clientId });
   } catch (error) {
     response.status(400).json({ error: error.message });
   }
@@ -205,6 +245,14 @@ app.get("/api/jobs/:jobId", (request, response) => {
   const job = jobs.get(request.params.jobId);
   if (!job) return response.status(404).json({ error: "Job not found." });
   response.json(job);
+});
+
+app.get("/api/prompts/:promptId", async (request, response) => {
+  try {
+    response.json(await recoverPrompt(request.params.promptId));
+  } catch (error) {
+    response.status(404).json({ error: error.message });
+  }
 });
 
 app.get("/api/view", async (request, response) => {
