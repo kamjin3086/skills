@@ -1,0 +1,4 @@
+interface:
+  display_name: "ComfyUI Workflow App Builder"
+  short_description: "Turn ComfyUI API workflows into polished local web apps."
+  default_prompt: "Use $comfyui-workflow-app-builder to wrap this ComfyUI API workflow as a browser-based app."

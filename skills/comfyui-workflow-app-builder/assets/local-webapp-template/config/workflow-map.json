@@ -1,0 +1,16 @@
+{
+  "appName": "ComfyUI Workflow App",
+  "outputType": "auto",
+  "fields": [
+    {
+      "name": "prompt",
+      "label": "Prompt",
+      "type": "textarea",
+      "valueType": "string",
+      "placeholder": "Describe what you want to generate...",
+      "required": true,
+      "node_id": "REPLACE_PROMPT_NODE_ID",
+      "input": "text"
+    }
+  ]
+}
