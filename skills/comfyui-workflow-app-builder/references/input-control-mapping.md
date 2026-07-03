@@ -66,6 +66,7 @@ Use these mappings:
 - `IMAGE`, `MASK`, upload-like literal filenames: file/dropzone, routed through backend upload handling.
 - `seed`, `noise_seed`: number input with randomize/reuse affordance; advanced by default unless the user asked for reproducibility.
 - `width`/`height`: pair controls, preferably aspect-ratio presets plus optional advanced numeric fields. Enforce multiples when object_info indicates step or when the model requires multiples of 8/16/64.
+- Image dimensions: default to a fast preview-sized option unless the user explicitly asks for high resolution. For Flux-like image workflows, prefer roughly 1 megapixel defaults such as 1024x1024, then expose larger landscape/portrait options for final renders. Explain that higher resolution and larger batches increase wait time.
 - Video duration and frame rate: label `fps` as "frame rate" or "frames per second" rather than raw "FPS" when ambiguity or browser translation is likely. Make duration explicit with `duration ~= frames / fps`. Lowering fps alone does not reduce generation work if frame count stays fixed; speed-oriented defaults should reduce frame count and often resolution too. For a practical 10-second draft default, prefer about 16 fps and 161 frames, with copy explaining that 24 fps is smoother but slower.
 - `steps`, `cfg`, `denoise`: advanced sliders with conservative ranges.
 - `sampler_name`, `scheduler`, `ckpt_name`, `lora_name`, `vae_name`: select only if options are available and the user asked to expose model/style controls. Otherwise hide.
