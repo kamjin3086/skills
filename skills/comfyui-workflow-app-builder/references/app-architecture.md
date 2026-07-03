@@ -12,6 +12,8 @@ Keep ComfyUI behind the generated backend. The frontend should call routes such 
 
 For a new app, copy `assets/local-webapp-template/` into the target app directory first. Then customize it instead of rewriting the common server, polling, preview, and layout code. The template is designed to build the frontend and serve it from the same Express backend port, so the user gets one local browser URL.
 
+Use a specific package/app name with a recognizable prefix, such as `cwa-<workflow-or-product-name>`, instead of a generic name like `comfyui-workflow-app`.
+
 ## Port Policy
 
 The app is accessed through a browser pointed at a local web service. Check and choose the port before starting.
@@ -33,6 +35,8 @@ Implement a small explicit configuration layer:
 - `APP_HOST`, default `0.0.0.0`.
 - `APP_PORT`, chosen free port.
 - `GENERATION_TIMEOUT_SECONDS`, default based on workflow type.
+
+Never commit a concrete private ComfyUI URL, API key, tunnel token, or local absolute path. Keep real values in environment variables or an untracked `.env`; keep `.env.example` as placeholders.
 
 Keep a server-side mapping from UI fields to workflow node inputs. Example:
 
@@ -58,6 +62,17 @@ For async backends:
 Download routes should set `Content-Disposition` with a safe, informative, unique filename. Include app/workflow name, a prompt or parameter hint when available, and a short job id. Keep preview URLs separate from download URLs so media components can render inline while download buttons save with useful names.
 
 For single-user or trusted LAN demos, in-memory state is enough. For public or untrusted multi-user use, add authentication, persistence, quotas, and a real queue.
+
+## Repository Safety
+
+Generated apps should be easy to upload for reuse without leaking private environment details:
+
+- Include `.gitignore` for `node_modules/`, `dist/`, `.env`, local outputs, temporary files, and logs.
+- Include `.env.example` with placeholder values only.
+- Include a short README with install/run commands and environment variable names.
+- Sanitize workflow defaults that contain timestamps, local paths, private endpoint URLs, or user-specific filesystem locations.
+- Before pushing a generated app, scan for private addresses, API keys, absolute local paths, generated outputs, and dependency/build folders.
+- Ask the user whether to upload the sanitized app to a repository; do not infer consent from the fact that the app was generated.
 
 ## Verification
 

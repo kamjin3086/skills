@@ -23,6 +23,7 @@ Turn a ComfyUI API-format workflow into a usable local web application. Treat Co
 10. Select a free port outside common defaults. Use `scripts/choose_port.py` or equivalent logic. Prefer binding the generated web service to `0.0.0.0` so it can be reached beyond localhost when the network allows it. Report a browser URL that the user can actually open, such as `http://127.0.0.1:<port>` for the same machine and a LAN URL when known.
 11. Install dependencies if needed, start the app, and report the browser URL. The generated app should be left running when the user wants to use it.
 12. Verify only the app boot and browser UI by default. Do not submit an actual ComfyUI generation job unless the user asks to validate generation or provides permission to spend compute.
+13. If the generated app has reuse value, ask whether the user wants it uploaded to a code repository in a privacy-safe form. Do not upload automatically. Before any upload, remove private ComfyUI URLs, API keys, local absolute paths, generated outputs, `node_modules`, and build artifacts.
 
 ## Architecture Defaults
 
@@ -34,6 +35,7 @@ For new apps, first copy `assets/local-webapp-template/` instead of rewriting co
 - `workflows/workflow_api.json` chosen workflow file.
 - `src/App.jsx` labels, layout, fields, and output presentation.
 - `server/index.js` only when endpoint behavior or upload handling needs changes.
+- `.env.example`, `.gitignore`, and `README.md` so the app can be reused or committed without exposing private endpoints.
 
 The backend must:
 - Load and deep-copy the workflow template per request.
@@ -91,5 +93,6 @@ For a new generated app, provide:
 - Clear environment variables for `COMFY_URL`, `WORKFLOW_PATH`, and selected port.
 - A short run command.
 - Browser boot verification notes. Mention if no generation job was submitted.
+- A note that the app is repository-ready only after `.env.example` uses placeholders and `.gitignore` excludes secrets, dependencies, builds, and outputs.
 
 For an existing app, integrate with its stack and conventions rather than replacing it.
