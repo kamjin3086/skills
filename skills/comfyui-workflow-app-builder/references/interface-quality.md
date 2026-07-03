@@ -60,6 +60,7 @@ Include all four:
 
 - Empty: show where the result will appear and what the user can do.
 - Loading: choose wait treatments that fit the workflow duration. For quick image workflows, reassure the user with short copy such as "almost ready; keep this page open" and avoid overexplaining. For slow video workflows, set expectations with concrete duration copy, for example that a 10-second video may take 5-12 minutes, and ask the user to keep the page open. Prefer gentle ambient waiting animations or calm status cards over conventional percentage progress bars when progress is approximate, because precise bars can make long waits feel more stressful.
+- Running job controls: disable the primary generate action while a job is active. Show elapsed time near the action, provide a small stop button when the backend can cancel or mark the job stopped, and show total elapsed time after completion, error, or cancellation.
 - Error: show a concise cause and next action, especially when ComfyUI is offline.
 - Success: preview output and provide download/open/retry actions.
 - Downloads: use a clear download button for every final output. The downloaded filename should be sanitized, informative, and unique rather than relying on the raw ComfyUI filename.

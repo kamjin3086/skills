@@ -36,6 +36,23 @@ function buildDownloadUrl(output, jobId, values, appName) {
   return `/api/download?${params.toString()}`;
 }
 
+function isTerminalStatus(status) {
+  return ["complete", "error", "unknown", "canceled"].includes(status);
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+function jobDuration(job, now) {
+  if (!job?.startedAt) return "";
+  return formatDuration((job.endedAt || now) - job.startedAt);
+}
+
 function ResultPreview({ outputs, jobId, values, appName }) {
   if (!outputs?.length) {
     return (
@@ -182,6 +199,7 @@ export default function App() {
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
   const [restored, setRestored] = useState(false);
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     async function load() {
@@ -204,7 +222,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!job?.jobId || ["complete", "error", "unknown"].includes(job.status)) return;
+    if (!job?.jobId || isTerminalStatus(job.status)) return;
     const timer = setInterval(async () => {
       const response = await fetch(`${API_BASE}/api/jobs/${job.jobId}`);
       if (response.ok) {
@@ -226,8 +244,14 @@ export default function App() {
   }, [job]);
 
   useEffect(() => {
+    if (!job || isTerminalStatus(job.status)) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [job]);
+
+  useEffect(() => {
     if (!job || restored) return;
-    const shouldRecover = job.promptId && !["complete", "error", "unknown"].includes(job.status);
+    const shouldRecover = job.promptId && !isTerminalStatus(job.status);
     if (!shouldRecover) return;
     setRestored(true);
     async function recover() {
@@ -248,8 +272,9 @@ export default function App() {
     recover().catch(() => {});
   }, [job, restored]);
 
-  const busy = job && !["complete", "error"].includes(job.status);
+  const busy = job && !isTerminalStatus(job.status);
   const progressPercent = Math.round((job?.progress || 0) * 100);
+  const durationLabel = jobDuration(job, now);
 
   const primaryFields = useMemo(() => (config?.fields || []).filter((field) => !field.advanced), [config]);
   const advancedFields = useMemo(() => (config?.fields || []).filter((field) => field.advanced), [config]);
@@ -274,11 +299,36 @@ export default function App() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Generation failed.");
-      const nextJob = { jobId: data.jobId, promptId: data.promptId, status: "queued", progress: 0.05, outputs: [] };
+      const nextJob = {
+        jobId: data.jobId,
+        promptId: data.promptId,
+        status: "queued",
+        progress: 0.05,
+        startedAt: data.startedAt || Date.now(),
+        endedAt: null,
+        outputs: []
+      };
       setJob(nextJob);
       saveState({ values, job: nextJob });
     } catch (generateError) {
       setError(generateError.message);
+    }
+  }
+
+  async function stopJob() {
+    if (!job?.jobId || !busy) return;
+    setError("");
+    try {
+      let response = await fetch(`${API_BASE}/api/jobs/${job.jobId}/cancel`, { method: "POST" });
+      if (response.status === 404 && job.promptId) {
+        response = await fetch(`${API_BASE}/api/prompts/${job.promptId}/cancel`, { method: "POST" });
+      }
+      const nextJob = await response.json();
+      if (!response.ok) throw new Error(nextJob.error || "Stop failed.");
+      setJob(nextJob);
+      saveState({ job: nextJob });
+    } catch (stopError) {
+      setError(stopError.message);
     }
   }
 
@@ -309,6 +359,17 @@ export default function App() {
             </details>
           )}
 
+          {job && (busy || job.endedAt) && durationLabel && (
+            <div className="job-timing">
+              <span>{busy ? "Elapsed" : "Total"}: {durationLabel}</span>
+              {busy && (
+                <button className="stop-button" type="button" onClick={stopJob}>
+                  Stop
+                </button>
+              )}
+            </div>
+          )}
+
           <button className="generate-button" disabled={busy || status.checking} type="submit">
             {busy ? "Generating..." : "Generate"}
           </button>
@@ -334,6 +395,7 @@ export default function App() {
               <div style={{ width: `${progressPercent}%` }} />
             </div>
           )}
+          {!busy && job?.endedAt && durationLabel && <p className="duration-note">Total time: {durationLabel}</p>}
           {job?.error && <p className="message error" role="alert">{job.error}</p>}
           <ResultPreview outputs={job?.outputs} jobId={job?.jobId} values={values} appName={config?.appName} />
         </section>

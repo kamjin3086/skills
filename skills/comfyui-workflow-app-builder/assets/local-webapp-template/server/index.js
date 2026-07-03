@@ -123,16 +123,18 @@ function sanitizeDownloadName(value) {
 }
 
 async function pollJob(jobId) {
-  const job = jobs.get(jobId);
   const start = Date.now();
 
   while (Date.now() - start < TIMEOUT_SECONDS * 1000) {
+    const job = jobs.get(jobId);
+    if (!job || job.status === "canceled") return;
     try {
       const response = await comfyFetch(`${COMFY_URL}/history/${job.promptId}`);
       const history = await response.json();
       if (history[job.promptId]) {
         job.status = "complete";
         job.progress = 1;
+        job.endedAt = Date.now();
         job.outputs = collectOutputs(history[job.promptId]);
         jobs.set(jobId, job);
         return;
@@ -143,15 +145,40 @@ async function pollJob(jobId) {
     } catch (error) {
       job.status = "error";
       job.error = error.message;
+      job.endedAt = Date.now();
       jobs.set(jobId, job);
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
 
+  const job = jobs.get(jobId);
+  if (!job || job.status === "canceled") return;
   job.status = "error";
   job.error = "Generation timed out.";
+  job.endedAt = Date.now();
   jobs.set(jobId, job);
+}
+
+async function cancelComfyPrompt(promptId) {
+  const errors = [];
+  try {
+    await comfyFetch(`${COMFY_URL}/queue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ delete: [promptId] })
+    });
+  } catch (error) {
+    errors.push(error.message);
+  }
+
+  try {
+    await comfyFetch(`${COMFY_URL}/interrupt`, { method: "POST" });
+  } catch (error) {
+    errors.push(error.message);
+  }
+
+  return errors;
 }
 
 async function recoverPrompt(promptId) {
@@ -231,11 +258,13 @@ app.post("/api/generate", async (request, response) => {
       clientId,
       status: "queued",
       progress: 0.05,
+      startedAt: Date.now(),
+      endedAt: null,
       outputs: [],
       error: null
     });
     pollJob(jobId);
-    response.json({ jobId, promptId: data.prompt_id, clientId });
+    response.json(jobs.get(jobId));
   } catch (error) {
     response.status(400).json({ error: error.message });
   }
@@ -247,12 +276,39 @@ app.get("/api/jobs/:jobId", (request, response) => {
   response.json(job);
 });
 
+app.post("/api/jobs/:jobId/cancel", async (request, response) => {
+  const job = jobs.get(request.params.jobId);
+  if (!job) return response.status(404).json({ error: "Job not found." });
+  if (["complete", "error", "unknown", "canceled"].includes(job.status)) return response.json(job);
+
+  const cancelErrors = await cancelComfyPrompt(job.promptId);
+  job.status = "canceled";
+  job.endedAt = Date.now();
+  job.error = cancelErrors.length ? `Stopped local waiting; ComfyUI cancel returned: ${cancelErrors.join(" / ")}` : null;
+  jobs.set(job.jobId, job);
+  response.json(job);
+});
+
 app.get("/api/prompts/:promptId", async (request, response) => {
   try {
     response.json(await recoverPrompt(request.params.promptId));
   } catch (error) {
     response.status(404).json({ error: error.message });
   }
+});
+
+app.post("/api/prompts/:promptId/cancel", async (request, response) => {
+  const cancelErrors = await cancelComfyPrompt(request.params.promptId);
+  response.json({
+    jobId: `recovered-${request.params.promptId}`,
+    promptId: request.params.promptId,
+    status: "canceled",
+    progress: 0,
+    startedAt: null,
+    endedAt: Date.now(),
+    outputs: [],
+    error: cancelErrors.length ? `Stopped local waiting; ComfyUI cancel returned: ${cancelErrors.join(" / ")}` : null
+  });
 });
 
 app.get("/api/view", async (request, response) => {

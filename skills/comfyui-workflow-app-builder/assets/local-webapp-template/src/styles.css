@@ -193,6 +193,36 @@ h2 {
   opacity: 0.64;
 }
 
+.job-timing {
+  border: 1px solid rgba(24, 32, 31, 0.12);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #67726f;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.stop-button {
+  border: 1px solid rgba(123, 38, 30, 0.28);
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: #7b261e;
+  background: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.stop-button:focus-visible {
+  outline: 3px solid rgba(123, 38, 30, 0.24);
+  outline-offset: 2px;
+}
+
 .message {
   margin: 0;
   border-radius: 8px;
@@ -203,6 +233,13 @@ h2 {
 .message.error {
   color: #7b261e;
   background: #ffe0d9;
+}
+
+.duration-note {
+  margin: -4px 0 0;
+  color: #67726f;
+  font-size: 0.92rem;
+  font-weight: 700;
 }
 
 .progress-track {
