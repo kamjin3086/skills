@@ -10,7 +10,32 @@ function defaultValue(field) {
   return "";
 }
 
-function ResultPreview({ outputs }) {
+function slug(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
+}
+
+function buildDownloadUrl(output, jobId, values, appName) {
+  const original = output.filename || "output.bin";
+  const extension = original.includes(".") ? original.slice(original.lastIndexOf(".")) : ".bin";
+  const promptHint = slug(values?.prompt) || "render";
+  const appHint = slug(appName) || "comfyui";
+  const unique = String(jobId || Date.now().toString(36)).slice(0, 8);
+  const downloadName = `${appHint}_${promptHint}_${unique}${extension}`;
+  const params = new URLSearchParams({
+    filename: output.filename,
+    subfolder: output.subfolder || "",
+    type: output.type || "output",
+    downloadName
+  });
+  return `/api/download?${params.toString()}`;
+}
+
+function ResultPreview({ outputs, jobId, values, appName }) {
   if (!outputs?.length) {
     return (
       <div className="empty-result">
@@ -22,6 +47,7 @@ function ResultPreview({ outputs }) {
 
   const first = outputs[0];
   const lower = first.filename.toLowerCase();
+  const downloadUrl = buildDownloadUrl(first, jobId, values, appName);
 
   return (
     <div className="result-stack">
@@ -36,9 +62,10 @@ function ResultPreview({ outputs }) {
           Open {first.filename}
         </a>
       )}
-      <a className="download-link" href={`${API_BASE}${first.url}`} download>
-        Download {first.filename}
+      <a className="download-button" href={`${API_BASE}${downloadUrl}`}>
+        Download result
       </a>
+      <p className="file-note">{first.filename}</p>
     </div>
   );
 }
@@ -243,7 +270,7 @@ export default function App() {
             </div>
           )}
           {job?.error && <p className="message error" role="alert">{job.error}</p>}
-          <ResultPreview outputs={job?.outputs} />
+          <ResultPreview outputs={job?.outputs} jobId={job?.jobId} values={values} appName={config?.appName} />
         </section>
       </section>
     </main>

@@ -5,11 +5,12 @@
 When the user says "check what workflows exist", "choose a workflow", or has not supplied a workflow path:
 
 1. Confirm or infer roots to scan. Start with the current workspace, user-provided folders, and likely ComfyUI folders under the user's documents or ComfyUI install if visible.
-2. Run `scripts/find_workflows.py` with those roots.
-3. Prefer API-format workflows over UI-format workflows.
-4. Summarize candidates with path, likely format, node count, modified time, and guessed output type.
-5. Ask the user to choose a workflow when there are multiple plausible candidates.
-6. After selection, ask for additional requirements in one compact question.
+2. If a ComfyUI URL is reachable, also try remote user-data discovery with `scripts/list_comfyui_user_workflows.py <COMFY_URL>`. This can find workflows saved in ComfyUI's user data area.
+3. Run `scripts/find_workflows.py` with local roots. Keep scans bounded; prefer explicit roots such as Downloads or the workspace over all of Documents.
+4. Prefer API-format workflows over UI-format workflows.
+5. Summarize candidates with source, path, likely format, node count, modified time when available, and guessed output type.
+6. Ask the user to choose a workflow when there are multiple plausible candidates.
+7. After selection, ask for additional requirements in one compact question.
 
 Useful additional requirement prompts:
 
@@ -37,6 +38,7 @@ UI-format workflow:
 
 - Top-level `nodes`, `links`, `groups`, or canvas metadata.
 - Must be re-exported from ComfyUI as "Save API Format" before app wrapping.
+- If the UI-format workflow was found through `/userdata`, the agent may open it in the ComfyUI frontend for the user, but should still prefer an API-format export before generating a wrapper app.
 
 Unknown JSON:
 

@@ -53,7 +53,9 @@ For async backends:
 2. Backend stores `{ jobId, promptId, clientId, status, progress, outputs, error }` in memory for local demos.
 3. Frontend polls or uses server-sent events/WebSocket against the app backend.
 4. Backend reads ComfyUI events/history and updates job state.
-5. Outputs are downloaded or proxied through the app backend.
+5. Outputs are previewed through a view route and downloaded through a separate backend download route.
+
+Download routes should set `Content-Disposition` with a safe, informative, unique filename. Include app/workflow name, a prompt or parameter hint when available, and a short job id. Keep preview URLs separate from download URLs so media components can render inline while download buttons save with useful names.
 
 For single-user or trusted LAN demos, in-memory state is enough. For public or untrusted multi-user use, add authentication, persistence, quotas, and a real queue.
 

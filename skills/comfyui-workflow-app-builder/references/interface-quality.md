@@ -62,6 +62,7 @@ Include all four:
 - Loading: show submitted/running/finalizing states and elapsed time.
 - Error: show a concise cause and next action, especially when ComfyUI is offline.
 - Success: preview output and provide download/open/retry actions.
+- Downloads: use a clear download button for every final output. The downloaded filename should be sanitized, informative, and unique rather than relying on the raw ComfyUI filename.
 
 ## Local App Expectations
 

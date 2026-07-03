@@ -103,12 +103,23 @@ function collectOutputs(historyItem) {
         outputs.push({
           kind: key,
           filename: item.filename,
+          subfolder: item.subfolder || "",
+          type: item.type || "output",
           url: `/api/view?${query.toString()}`
         });
       }
     }
   }
   return outputs;
+}
+
+function sanitizeDownloadName(value) {
+  return String(value || "comfyui-output")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 160) || "comfyui-output";
 }
 
 async function pollJob(jobId) {
@@ -205,6 +216,24 @@ app.get("/api/view", async (request, response) => {
     });
     const comfyResponse = await comfyFetch(`${COMFY_URL}/view?${query.toString()}`);
     response.setHeader("content-type", comfyResponse.headers.get("content-type") || "application/octet-stream");
+    const buffer = Buffer.from(await comfyResponse.arrayBuffer());
+    response.send(buffer);
+  } catch (error) {
+    response.status(404).json({ error: error.message });
+  }
+});
+
+app.get("/api/download", async (request, response) => {
+  try {
+    const query = new URLSearchParams({
+      filename: String(request.query.filename || ""),
+      subfolder: String(request.query.subfolder || ""),
+      type: String(request.query.type || "output")
+    });
+    const comfyResponse = await comfyFetch(`${COMFY_URL}/view?${query.toString()}`);
+    const requestedName = sanitizeDownloadName(request.query.downloadName || request.query.filename);
+    response.setHeader("content-type", comfyResponse.headers.get("content-type") || "application/octet-stream");
+    response.setHeader("content-disposition", `attachment; filename="${requestedName}"`);
     const buffer = Buffer.from(await comfyResponse.arrayBuffer());
     response.send(buffer);
   } catch (error) {

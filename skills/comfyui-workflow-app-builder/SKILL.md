@@ -63,6 +63,7 @@ Read only the files needed for the task:
 ## Scripts
 
 - `scripts/find_workflows.py [roots...]` finds likely ComfyUI workflow JSON files and labels API-format candidates.
+- `scripts/list_comfyui_user_workflows.py <COMFY_URL>` tries ComfyUI `/userdata` and `/v2/userdata` routes for saved workflow JSON files.
 - `scripts/detect_comfyui.py` probes local ports and process hints to infer a ComfyUI base URL before asking the user.
 - `scripts/inspect_workflow.py <workflow_api.json>` prints likely prompt, image, seed, dimension, video, and output nodes.
 - `scripts/choose_port.py --start 17000 --end 19000` returns a free port outside common app/dev-server ranges.

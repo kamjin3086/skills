@@ -8,6 +8,18 @@ from typing import Any
 
 MAX_SIZE_MB = 25
 NAME_HINTS = ("workflow", "api", "comfy", "txt2img", "img2img", "video", "ltx", "wan", "flux", "sdxl")
+SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "dist",
+    "build",
+    "__pycache__",
+    ".cache",
+    "AppData",
+}
 
 
 def classify(data: Any) -> tuple[str, int, str]:
@@ -47,8 +59,9 @@ def is_candidate_name(path: Path) -> bool:
     return lower.endswith(".json") and (any(hint in lower for hint in NAME_HINTS) or path.stat().st_size < 2_000_000)
 
 
-def iter_json_files(roots: list[Path]):
+def iter_json_files(roots: list[Path], max_files: int):
     seen: set[Path] = set()
+    inspected = 0
     for root in roots:
         if root.is_file() and root.suffix.lower() == ".json":
             resolved = root.resolve()
@@ -60,6 +73,11 @@ def iter_json_files(roots: list[Path]):
             continue
         for path in root.rglob("*.json"):
             try:
+                if any(part in SKIP_DIRS for part in path.parts):
+                    continue
+                inspected += 1
+                if inspected > max_files:
+                    return
                 resolved = path.resolve()
                 if resolved in seen or path.stat().st_size > MAX_SIZE_MB * 1024 * 1024:
                     continue
@@ -73,10 +91,11 @@ def iter_json_files(roots: list[Path]):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Find likely ComfyUI workflow JSON files.")
     parser.add_argument("roots", nargs="*", default=["."], help="Files or directories to scan.")
+    parser.add_argument("--max-files", type=int, default=5000, help="Maximum JSON files to inspect before stopping.")
     args = parser.parse_args()
 
     results = []
-    for path in iter_json_files([Path(root) for root in args.roots]):
+    for path in iter_json_files([Path(root) for root in args.roots], args.max_files):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             fmt, node_count, output = classify(data)
