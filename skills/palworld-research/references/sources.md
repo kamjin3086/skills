@@ -55,6 +55,36 @@ For current-version questions:
 3. If a map/database page shows an update date, include it.
 4. If the user asks “now/current/latest/today”, browse even if you think you know.
 
+## Freshness Risk Levels
+
+- **High risk**: patch changes, newly added Pals/items/areas, map resources, event content, server/API behavior, meta recommendations. Always browse.
+- **Medium risk**: drops, recipes, breeding routes, exact spawn areas. Browse unless a recent trusted source/tool result is available.
+- **Low risk**: basic old Pal identity, broad mechanics, terminology. Still cite if the user asks for accuracy.
+
+## Reliability Labels
+
+Use these labels internally and reflect them when useful:
+
+- **官方**: Steam/Pocketpair. Best for what changed, not always complete for exact values.
+- **结构化数据**: PalDB, Palworld.gg database, wiki tables, calculators. Best for exact values.
+- **地图数据**: interactive maps. Best for location claims if recently updated.
+- **百科说明**: wiki prose. Good for mechanics and context.
+- **社区经验**: Reddit, Steam guides, videos, forums. Good for tactics and preferences, weak for facts.
+
+## Search Query Patterns
+
+Use targeted searches instead of broad web searches:
+
+```text
+site:store.steampowered.com/news/app/1623730 Palworld [topic]
+site:steamdb.info/app/1623730/patchnotes Palworld [version/topic]
+site:palworld.wiki.gg [Pal/item/mechanic]
+site:palworld.gg [Pal/item/map/topic]
+site:palworld.th.gl [Pal/resource/location]
+```
+
+For Chinese user questions, search both Chinese and English names when possible. If only a Chinese name is given, use a database/wiki page to confirm the English/internal name before searching map or guide sources.
+
 ## Citation Style
 
 Use short source bullets:
@@ -68,3 +98,13 @@ Use short source bullets:
 
 Avoid long quotes. Paraphrase unless a short exact wording is necessary.
 
+## Bad Source Handling
+
+Avoid relying on:
+
+- AI-generated SEO pages with no data tables or update dates.
+- Pages that do not indicate game version for version-sensitive claims.
+- Copied wiki mirrors when the original wiki/database is reachable.
+- Old videos/posts for exact current-version recommendations unless explicitly historical.
+
+If only weak sources are available, state that the answer is provisional.
