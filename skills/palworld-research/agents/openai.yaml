@@ -1,0 +1,6 @@
+interface:
+  display_name: "Palworld Research"
+  short_description: "Sourced Palworld guide and data answers"
+  default_prompt: "Use $palworld-research to answer my Palworld question with current sources and clear uncertainty."
+policy:
+  allow_implicit_invocation: true
