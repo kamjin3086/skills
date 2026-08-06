@@ -1,6 +1,6 @@
 ---
 name: local-image-understanding
-description: Analyze and understand local images with a local OpenAI-compatible vision model (Qwen3.6-35B-A3B, llama-server on 127.0.0.1:8003). Use when Codex needs to see, describe, verify, or compare the contents of local images without sending them to any cloud service - including rendered video frames, screenshots, layout/design check images, diagrams, photos, or generated artwork.
+description: Analyze and understand local images with a local OpenAI-compatible vision model (Qwen3.6-35B-A3B via llama-swap on 127.0.0.1:8101). Use when Codex needs to see, describe, verify, or compare the contents of local images without sending them to any cloud service - including rendered video frames, screenshots, layout/design check images, diagrams, photos, or generated artwork.
 ---
 
 # Local Image Understanding
