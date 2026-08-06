@@ -1,0 +1,4 @@
+interface:
+  display_name: "本地看图"
+  short_description: "本地多模态模型看图描述、画面检查与视觉问答，数据不出本机"
+  default_prompt: "Use $local-image-understanding to describe this image."

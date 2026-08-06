@@ -9,6 +9,7 @@ npx skills add https://github.com/kamjin3086/skills --skill <skill-name>
 |skill-name| description|
 |:---|:---|
 |comfyui-workflow-app-builder| Build polished browser-based apps from ComfyUI API workflows |
+|local-image-understanding| Analyze local images with the local Qwen3.6-35B-A3B vision model (llama-swap 8101) |
 |local-video-analysis| Local video/image analysis  |
 |lemonade-omni-router-workflow| Orchestrate multimodal workflows through Lemonade OmniRouter |
 |palworld-research| Sourced Palworld guide and data answers |
