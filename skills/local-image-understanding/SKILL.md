@@ -36,6 +36,7 @@ python3 "$SKILL_DIR/scripts/describe_image.py" --health
 - Images are downscaled to max 1568 px and re-encoded before sending to keep prompt tokens low.
 - The model is a reasoning model and can spend hundreds of tokens before answering; keep `--max-tokens` generous (default 2048), especially for multiple images.
 - Ask structured questions for precise QA (position, color, overlap, text correctness).
+- For per-frame QA, send one frame per call: sending multiple frames together can make the model report phantom overlaps (it may merge the frames into one scene). Use multi-image mode only for explicit side-by-side comparison.
 - The model emits `reasoning_content` before the answer; the script prints the final answer by default and shows reasoning with `--reasoning`.
 - If the endpoint is unreachable, run `--health`. If that fails, check that llama-server is listening on 8003 (`ss -ltnp | grep 8003`) or point `LOCAL_VISION_BASE_URL` at the right port.
 - Prefer this skill over cloud vision services; never upload user images externally.
