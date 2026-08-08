@@ -88,10 +88,11 @@ def version_at_least(version: Any, minimum: tuple[int, int, int]) -> bool:
 
 
 def is_omni_collection(model: dict[str, Any]) -> bool:
-    if model.get("recipe") != "collection.omni":
-        return False
-    model_id = str(model.get("id", "")).strip()
-    return bool(OMNI_NAME_RE.match(model_id) or model.get("components"))
+    # Canonical marker per Lemonade docs: recipe == "collection.omni".
+    # Do NOT require the LMX-Omni-* name pattern or a "custom" label/suffix:
+    # user-registered collections can use arbitrary IDs, and "custom" now labels
+    # every extra local model, so it no longer discriminates omni models.
+    return model.get("recipe") == "collection.omni"
 
 
 def omni_collection_score(model: dict[str, Any]) -> tuple[int, str]:
@@ -101,8 +102,6 @@ def omni_collection_score(model: dict[str, Any]) -> tuple[int, str]:
     score = 0
     if model.get("downloaded") is True:
         score += 100
-    if "custom" in normalized_labels or "custom" in model_id.lower():
-        score += 50
     if OMNI_NAME_RE.match(model_id):
         score += 20
     if "halo" in model_id.lower():
@@ -126,6 +125,7 @@ def summarize_omni_collections(model_items: list[Any]) -> list[dict[str, Any]]:
             {
                 "id": model_id,
                 "downloaded": model.get("downloaded") is True,
+                "ready": model.get("downloaded") is True,
                 "suggested": model.get("suggested") is True,
                 "official_name_pattern": bool(match),
                 "size": match.group("size") if match else None,
@@ -255,7 +255,12 @@ def print_summary(result: dict[str, Any], out_file: str) -> None:
     warnings = result.get("warnings") or []
     fallback_hints = result.get("fallback_hints") or []
     print(f"[report] capability_report={out_file}")
-    print(f"ready={result.get('omni_router_ready')} version={result.get('server_version')} collection={selected.get('id')}")
+    print(
+        f"ready={result.get('omni_router_ready')} "
+        f"omni_model_available={result.get('omni_model_available')} "
+        f"version={result.get('server_version')} "
+        f"collection={selected.get('id') if selected else 'none'}"
+    )
     print(
         "labels="
         + ",".join(k for k, v in labels.items() if v)
@@ -304,7 +309,10 @@ def main() -> int:
             labels_norm.update(normalize_label(v) for v in labels)
 
     omni_collections = summarize_omni_collections(model_items)
-    selected_omni_collection = omni_collections[0] if omni_collections else None
+    selected_omni_collection = next(
+        (collection for collection in omni_collections if collection.get("ready")),
+        None,
+    )
     server_version = health.get("version") if isinstance(health, dict) else None
     collection_chat_version_ready = version_at_least(server_version, MIN_COLLECTION_CHAT_VERSION)
 
@@ -335,19 +343,30 @@ def main() -> int:
             retries=args.retries,
         )
 
-    omni_router_ready = (
-        endpoint_results["chat_completions"]["available"]
-        and endpoint_results["images_generations"]["available"]
-        and endpoint_results["images_edits"]["available"]
-        and endpoint_results["audio_speech"]["available"]
-        and endpoint_results["audio_transcriptions"]["available"]
-        and (not omni_collections or collection_chat_version_ready)
-        and has_image
-        and has_edit
-        and has_tts
-        and has_stt
-        and has_vision_or_tool
-    )
+    ready_collections = [c for c in omni_collections if c.get("ready")]
+    pending_collections = [c for c in omni_collections if not c.get("ready")]
+    omni_model_available = bool(ready_collections)
+    if omni_model_available:
+        # Server-side orchestration: one downloaded collection is sufficient.
+        # The server internally executes generate_image/edit_image/text_to_speech
+        # tools, so component-label checks are not required for readiness.
+        omni_router_ready = (
+            endpoint_results["chat_completions"]["available"]
+            and collection_chat_version_ready
+        )
+    else:
+        omni_router_ready = (
+            endpoint_results["chat_completions"]["available"]
+            and endpoint_results["images_generations"]["available"]
+            and endpoint_results["images_edits"]["available"]
+            and endpoint_results["audio_speech"]["available"]
+            and endpoint_results["audio_transcriptions"]["available"]
+            and has_image
+            and has_edit
+            and has_tts
+            and has_stt
+            and has_vision_or_tool
+        )
 
     fallback_hints: list[str] = []
     if not has_edit or not endpoint_results["images_edits"]["available"]:
@@ -358,6 +377,19 @@ def main() -> int:
         fallback_hints.append("Transcription unavailable: skip STT validation")
     if omni_collections and not collection_chat_version_ready:
         fallback_hints.append("Omni collection chat unavailable: upgrade Lemonade to 10.7.0+ or use component endpoint orchestration")
+    if not omni_model_available:
+        if pending_collections:
+            fallback_hints.append(
+                "Omni collection(s) found but not downloaded yet: "
+                + ", ".join(str(c["id"]) for c in pending_collections)
+                + "; wait for the download to finish, then rerun discovery"
+            )
+        else:
+            fallback_hints.append(
+                "No Omni collection found (recipe collection.omni). Download "
+                "LMX-Omni-5.5B-Lite or LMX-Omni-52B-Halo in Model Manager, or "
+                "register a custom collection, then rerun discovery"
+            )
 
     result = {
         "base_url": base_url,
@@ -376,6 +408,9 @@ def main() -> int:
             "vision_or_tool_calling": has_vision_or_tool,
         },
         "omni_collections": omni_collections,
+        "omni_model_available": omni_model_available,
+        "omni_ready_collections": [c["id"] for c in ready_collections],
+        "omni_pending_collections": [c["id"] for c in pending_collections],
         "selected_omni_collection": selected_omni_collection,
         "model_count": len(model_items),
         "models": model_items,

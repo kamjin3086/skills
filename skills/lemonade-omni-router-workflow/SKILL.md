@@ -106,6 +106,8 @@ Do not use this skill for single-modality, one-off tasks that do not require age
 From Lemonade OmniRouter design:
 - Omni models are virtual collections registered with `recipe: "collection.omni"`.
 - Official-style Omni model names follow `LMX-Omni-<xB>-<class>` (for example `LMX-Omni-52B-Halo`); custom variants may add a suffix while keeping the same prefix pattern.
+- Detect omni collections by `recipe == "collection.omni"` alone. Do NOT rely on the `custom` label or an ID suffix: `custom` now labels every extra local model, so it no longer discriminates omni models, and user-registered collections can use arbitrary IDs. The `LMX-Omni-<xB>-<class>` pattern is only a preference tiebreak, never a filter.
+- A downloaded collection appears in the default `/v1/models` listing; not-yet-downloaded collections surface only with `?show_all=true`. Treat `downloaded == true` as "ready": select it, `POST /v1/load`, then chat against the collection name.
 - Prefer collection-first operation: call `/v1/chat/completions` with the collection model name and let Lemonade run the server-side tool loop.
 - Server-side Omni collection chat requires Lemonade 10.7.0 or newer. Check `/v1/health.version` before diagnosing collection chat failures.
 - Explicitly load the selected collection with `POST /v1/load` before the first chat call. Loading a collection should load each component in turn.
@@ -131,7 +133,7 @@ Canonical tools and endpoints:
 Before executing any multimodal chain:
 1. Query `GET /v1/models?show_all=true`.
 2. Query `GET /v1/health` and confirm Lemonade version is at least 10.7.0 when collection-name server-side orchestration is required.
-3. Identify Omni collections where `recipe == "collection.omni"` and prefer downloaded `custom` models whose IDs match official-style `LMX-Omni-<xB>-<class>` naming. Do not hardcode exact names.
+3. Identify Omni collections where `recipe == "collection.omni"`; prefer `downloaded == true` collections (ready). Match official-style `LMX-Omni-<xB>-<class>` naming only as a tiebreak, never as a filter. Do not hardcode exact names and do not use `custom` labels/suffixes as an omni signal.
 4. Build a capability map from both:
    - collection `components` (preferred when a collection is selected),
    - component model `labels` (for example image, edit, tts, audio/transcription, vision/tool-calling).

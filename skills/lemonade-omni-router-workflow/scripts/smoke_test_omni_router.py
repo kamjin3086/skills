@@ -110,9 +110,10 @@ def version_at_least(version: object, minimum: tuple[int, int, int]) -> bool:
 
 
 def is_omni_collection(model: dict) -> bool:
-    return model.get("recipe") == "collection.omni" and (
-        bool(OMNI_NAME_RE.match(str(model.get("id", "")).strip())) or bool(model.get("components"))
-    )
+    # Canonical marker per Lemonade docs: recipe == "collection.omni".
+    # "custom" labels/suffixes no longer discriminate omni models (they label
+    # every extra local model), and custom collections may use arbitrary IDs.
+    return model.get("recipe") == "collection.omni"
 
 
 def omni_score(model: dict) -> tuple[int, str]:
@@ -122,8 +123,6 @@ def omni_score(model: dict) -> tuple[int, str]:
     score = 0
     if model.get("downloaded") is True:
         score += 100
-    if "custom" in normalized_labels or "custom" in mid.lower():
-        score += 50
     if OMNI_NAME_RE.match(mid):
         score += 20
     if "halo" in mid.lower():
