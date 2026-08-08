@@ -463,7 +463,7 @@ def run() -> int:
             image_ok, image_bytes = save_first_data_uri(
                 content,
                 IMAGE_DATA_RE,
-                artifacts_dir / "omni_collection_generated_image.bin" if artifacts_dir else None,
+                artifacts_dir / "omni_collection_generated_image.png" if artifacts_dir else None,
             )
             tests["omni_collection_image_generation_live"] = {
                 "runnable": True,
@@ -502,7 +502,7 @@ def run() -> int:
             edit_ok, edit_bytes = save_first_data_uri(
                 content,
                 IMAGE_DATA_RE,
-                artifacts_dir / "omni_collection_edited_image.bin" if artifacts_dir else None,
+                artifacts_dir / "omni_collection_edited_image.png" if artifacts_dir else None,
             )
             tests["omni_collection_image_edit_live"] = {
                 "runnable": True,
@@ -536,7 +536,7 @@ def run() -> int:
             audio_ok, audio_bytes = save_first_data_uri(
                 content,
                 AUDIO_DATA_RE,
-                artifacts_dir / "omni_collection_speech.bin" if artifacts_dir else None,
+                artifacts_dir / "omni_collection_speech.mp3" if artifacts_dir else None,
             )
             tests["omni_collection_text_to_speech_live"] = {
                 "runnable": True,
